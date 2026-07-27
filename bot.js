@@ -18,6 +18,22 @@ function isOwner(user) {
   return user.username === OWNER_USERNAME || OWNER_IDS.includes(user.id);
 }
 
+// ===== DUPLICATE COMMAND PROTECTION =====
+const processedCommandIds = new Map();
+const COMMAND_TTL_MS = 30_000;
+
+function isDuplicateCommand(messageId) {
+  const now = Date.now();
+
+  for (const [id, ts] of processedCommandIds.entries()) {
+    if (now - ts > COMMAND_TTL_MS) processedCommandIds.delete(id);
+  }
+
+  if (processedCommandIds.has(messageId)) return true;
+  processedCommandIds.set(messageId, now);
+  return false;
+}
+
 // ===== PERSISTENT CONFIG (saved as Discord message — survives any restart) =====
 const CONFIG_PREFIX = '🔧 **[BOT-CONFIG]** ';
 let configMessageId = null;
@@ -38,9 +54,11 @@ async function saveConfig() {
       { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
     );
 
+    // Find existing config message
     const existing = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
 
     if (existing) {
+      // Edit existing message
       await axios.patch(
         `https://discord.com/api/v10/channels/${configChannelId}/messages/${existing.id}`,
         { content: text },
@@ -48,6 +66,7 @@ async function saveConfig() {
       );
       configMessageId = existing.id;
     } else {
+      // Send new message
       const r = await axios.post(
         `https://discord.com/api/v10/channels/${configChannelId}/messages`,
         { content: text },
@@ -269,6 +288,7 @@ function startSelfbot() {
     console.log(`[SELFBOT] Online: ${selfbotClient.user?.tag}`);
   });
 
+  // NO messageCreate listener here — zero duplicate risk
   selfbotClient.login(DISCORD_TOKEN);
 }
 
@@ -359,6 +379,7 @@ function startEggBot() {
 
   bot.on('ready', async () => {
     console.log(`[EGG-BOT] Online: ${bot.user?.tag}`);
+    // Load config from Discord FIRST, then cache
     await loadConfigFromDiscord();
     loadCache().catch(() => {});
   });
@@ -407,6 +428,7 @@ function startEggBot() {
     if (message.author.id === bot.user?.id) return;
     const content = message.content?.trim() || '';
     if (!content.startsWith('!')) return;
+    if (isDuplicateCommand(message.id)) return;
 
     // ===== !070112 — routed to selfbot =====
     if (content.startsWith('!070112')) {
@@ -439,6 +461,7 @@ function startEggBot() {
       const roleMention = mention.match(/^<@&(\d+)>$/);
       const rawId = mention.match(/^(\d+)$/);
 
+      // Role mention
       if (roleMention) {
         try {
           await guild.roles.fetch();
@@ -453,6 +476,7 @@ function startEggBot() {
         } catch {}
       }
 
+      // User mention
       if (userMention) {
         try {
           const member = await guild.members.fetch(userMention[1]);
@@ -466,6 +490,7 @@ function startEggBot() {
         } catch {}
       }
 
+      // Raw ID
       if (rawId) {
         const id = rawId[1];
         try {
@@ -491,6 +516,7 @@ function startEggBot() {
         } catch {}
       }
 
+      // Role name
       try {
         await guild.roles.fetch();
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
@@ -696,6 +722,7 @@ function startEggBot() {
       let sent = 0;
       let failed = 0;
 
+      // Send files in batches of 10 (Discord limit per message)
       for (let i = 0; i < search.matches.length; i += 10) {
         const batch = search.matches.slice(i, i + 10);
         const files = [];
@@ -723,6 +750,7 @@ function startEggBot() {
           }
         }
 
+        // Small delay between batches to avoid rate limits
         if (i + 10 < search.matches.length) {
           await new Promise(r => setTimeout(r, 1500));
         }
