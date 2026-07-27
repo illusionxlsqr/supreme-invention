@@ -1,48 +1,144 @@
-onst { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+// fs/path not needed — config is stored in Discord messages
+
 // ===== CONFIG =====
-const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.Gjpuhd.A91-SG4JtmJlBSIxgH3h6TR2kqMEg71V5v7KxE';
-const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G_Jk3X.7AiF9q_tGITOLZG1bJFnS_eIiaErAdWCQl6pzs';
+const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.GPUP-w.b5J1I70ripiCbh8crlvKS6xd9LDRglnNiID3Tw';
+const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G-mfXU.6d-VnWv9pyOz8xfV-zh14NBJuwVSfcQOF6Bacc';
 const TARGET_CHANNEL_ID = '1530426488112021674';
 const SEARCH_CHANNEL = '1530426488112021674';
-// ===== OWNER - Only @ko_okh can use commands =====
+
+// ===== OWNERS =====
 const OWNER_USERNAME = 'ko_okh';
-// ===== PERSISTENT CONFIG FILE =====
-const CONFIG_FILE = path.join(__dirname, 'bot-config.json');
-function loadConfig() {
+const OWNER_IDS = ['1286668168575717377'];
+
+function isOwner(user) {
+  return user.username === OWNER_USERNAME || OWNER_IDS.includes(user.id);
+}
+
+// ===== PERSISTENT CONFIG (saved as Discord message — survives any restart) =====
+const CONFIG_PREFIX = '🔧 **[BOT-CONFIG]** ';
+let configMessageId = null;
+let configChannelId = TARGET_CHANNEL_ID;
+
+let allowedRoleId = null;
+let allowedRoleExpires = null;
+let allowedUsers = [];
+
+// Save config to a Discord message so it NEVER gets lost
+async function saveConfig() {
+  const data = { allowedRoleId, allowedRoleExpires, allowedUsers };
+  const text = CONFIG_PREFIX + '```json\n' + JSON.stringify(data) + '\n```';
+
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-      return data;
+    const res = await axios.get(
+      `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=20`,
+      { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
+    );
+
+    const existing = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
+
+    if (existing) {
+      await axios.patch(
+        `https://discord.com/api/v10/channels/${configChannelId}/messages/${existing.id}`,
+        { content: text },
+        { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+      );
+      configMessageId = existing.id;
+    } else {
+      const r = await axios.post(
+        `https://discord.com/api/v10/channels/${configChannelId}/messages`,
+        { content: text },
+        { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+      );
+      configMessageId = r.data?.id;
     }
+    console.log('[CONFIG] Saved to Discord message');
   } catch (err) {
-    console.error('[CONFIG] Failed to load config:', err.message);
+    console.error('[CONFIG] Failed to save to Discord:', err?.message || err);
   }
-  return {};
 }
-function saveConfig(config) {
+
+// Load config from Discord message on startup
+async function loadConfigFromDiscord() {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
-    console.log('[CONFIG] Saved config to disk');
+    const res = await axios.get(
+      `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=50`,
+      { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
+    );
+
+    const msg = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
+    if (msg) {
+      configMessageId = msg.id;
+      const jsonMatch = msg.content.match(/```json\n([\s\S]+?)\n```/);
+      if (jsonMatch) {
+        const data = JSON.parse(jsonMatch[1]);
+        allowedRoleId = data.allowedRoleId || null;
+        allowedRoleExpires = data.allowedRoleExpires || null;
+        allowedUsers = data.allowedUsers || [];
+        console.log(`[CONFIG] Loaded from Discord! Role: ${allowedRoleId || 'none'} | Users: ${allowedUsers.length}`);
+        return;
+      }
+    }
+    console.log('[CONFIG] No saved config found in Discord, starting fresh');
   } catch (err) {
-    console.error('[CONFIG] Failed to save config:', err.message);
+    console.error('[CONFIG] Failed to load from Discord:', err?.message || err);
   }
 }
-// Load saved config on startup
-const savedConfig = loadConfig();
-let allowedRoleId = savedConfig.allowedRoleId || null;
-console.log(`[CONFIG] Loaded allowedRoleId: ${allowedRoleId || 'none'}`);
-// ===== ACTIVE SEARCHES (persist across interactions) =====
+
+console.log('[CONFIG] Will load from Discord after bot connects...');
+
+// ===== TIME =====
+function parseTime(str) {
+  if (!str) return null;
+  const match = str.match(/^(\d+)\s*(s|sec|m|min|h|hr|hour|d|day|w|week)s?$/i);
+  if (!match) return null;
+  const num = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  const mul = { s:1e3, sec:1e3, m:6e4, min:6e4, h:36e5, hr:36e5, hour:36e5, d:864e5, day:864e5, w:6048e5, week:6048e5 };
+  return num * (mul[unit] || 0);
+}
+
+function fmtDur(ms) {
+  if (!ms) return 'permanent';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+function fmtExpiry(ts) {
+  if (!ts) return '♾️ Permanent';
+  const r = ts - Date.now();
+  return r <= 0 ? '⏰ Expired' : `⏳ ${fmtDur(r)} left`;
+}
+
+function isExpired(ts) { return ts ? Date.now() > ts : false; }
+
+function cleanExpired() {
+  let changed = false;
+  if (allowedRoleExpires && isExpired(allowedRoleExpires)) {
+    allowedRoleId = null; allowedRoleExpires = null; changed = true;
+  }
+  const before = allowedUsers.length;
+  allowedUsers = allowedUsers.filter(u => !isExpired(u.expires));
+  if (allowedUsers.length < before) changed = true;
+  if (changed) saveConfig();
+}
+setInterval(cleanExpired, 60000);
+
+// ===== ACTIVE SEARCHES =====
 const activeSearches = new Map();
+
 // ===== UTILS =====
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
-function isOwner(user) {
-  return user.username === OWNER_USERNAME;
-}
+
 function extractTxtFromRaw(raw) {
   const files = [];
   const seen = new Set();
@@ -71,6 +167,7 @@ function extractTxtFromRaw(raw) {
   }
   return files;
 }
+
 async function fetchRaw(token, channelId, before) {
   let url = `https://discord.com/api/v10/channels/${channelId}/messages?limit=100`;
   if (before) url += `&before=${before}`;
@@ -84,6 +181,7 @@ async function fetchRaw(token, channelId, before) {
     return res.data || [];
   } catch { return []; }
 }
+
 async function dl(url) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -95,10 +193,12 @@ async function dl(url) {
   }
   return null;
 }
-// ===== FILE CACHE FOR SEARCH =====
+
+// ===== FILE CACHE =====
 let fileCache = [];
 let cacheReady = false;
 let cacheLoading = false;
+
 async function loadCache() {
   if (cacheLoading) return;
   cacheLoading = true;
@@ -116,17 +216,15 @@ async function loadCache() {
       batches++;
       for (const msg of res.data) {
         for (const att of (msg.attachments || [])) {
-          if (att.filename?.toLowerCase().endsWith('.txt') && att.url) {
+          if (att.filename?.toLowerCase().endsWith('.txt') && att.url)
             all.push({ name: att.filename, url: att.url });
-          }
         }
         if (msg.message_snapshots && Array.isArray(msg.message_snapshots)) {
           for (const snap of msg.message_snapshots) {
             const sm = snap.message || snap;
             for (const att of (sm.attachments || [])) {
-              if (att.filename?.toLowerCase().endsWith('.txt') && att.url) {
+              if (att.filename?.toLowerCase().endsWith('.txt') && att.url)
                 all.push({ name: att.filename, url: att.url });
-              }
             }
           }
         }
@@ -141,145 +239,157 @@ async function loadCache() {
   cacheLoading = false;
   console.log(`[BOT] Cache loaded: ${all.length} files in ${batches} batches`);
 }
-// ===== SHARED HELPERS FOR !xlsqr =====
+
 function buildRow(idx, total) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('xlsqr_prev')
-      .setEmoji('⬅️')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(total <= 1),
-    new ButtonBuilder()
-      .setCustomId('xlsqr_page')
-      .setLabel(`${idx + 1} / ${total}`)
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(true),
-    new ButtonBuilder()
-      .setCustomId('xlsqr_next')
-      .setEmoji('➡️')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(total <= 1)
+    new ButtonBuilder().setCustomId('xlsqr_prev').setEmoji('⬅️').setStyle(ButtonStyle.Secondary).setDisabled(total <= 1),
+    new ButtonBuilder().setCustomId('xlsqr_page').setLabel(`${idx + 1} / ${total}`).setStyle(ButtonStyle.Primary).setDisabled(true),
+    new ButtonBuilder().setCustomId('xlsqr_next').setEmoji('➡️').setStyle(ButtonStyle.Secondary).setDisabled(total <= 1)
   );
 }
+
 function buildContent(fileName, query, idx, total) {
   const bar = '━'.repeat(28);
-  return [
-    bar,
-    `📄  **${fileName}**`,
-    `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${total}**`,
-    bar,
-  ].join('\n');
+  return [bar, `📄  **${fileName}**`, `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${total}**`, bar].join('\n');
 }
-// ===== SELFBOT (for !070112) =====
-let selfbotProcessing = false;
+
+// =========================================================
+//  SELFBOT — ONLY used for !070112
+//  NO messageCreate listener — the EGG BOT handles commands
+//  Selfbot just stays online for channel access
+// =========================================================
+let selfbotClient = null;
+let selfbotReady = false;
+
 function startSelfbot() {
-  const client = new SelfbotClient({ checkUpdate: false });
-  client.on('ready', () => {
-    console.log(`[SELFBOT] Online: ${client.user?.tag}`);
+  selfbotClient = new SelfbotClient({ checkUpdate: false });
+
+  selfbotClient.on('ready', () => {
+    selfbotReady = true;
+    console.log(`[SELFBOT] Online: ${selfbotClient.user?.tag}`);
   });
-  client.on('messageCreate', async (message) => {
-    if (!message.content?.startsWith('!070112')) return;
-    if (!isOwner(message.author)) return;
-    if (selfbotProcessing) return;
-    const sourceChannelId = message.content.split(/\s+/)[1];
-    if (!sourceChannelId) return;
-    selfbotProcessing = true;
-    try {
-      const destCh = await client.channels.fetch(TARGET_CHANNEL_ID);
-      if (!destCh) { selfbotProcessing = false; return; }
-      await message.channel.send('.');
-      let lastId;
-      const allFiles = [];
-      const seenUrls = new Set();
-      while (true) {
-        const msgs = await fetchRaw(DISCORD_TOKEN, sourceChannelId, lastId);
-        if (!msgs.length) break;
-        for (const raw of msgs) {
-          for (const f of extractTxtFromRaw(raw)) {
-            if (!seenUrls.has(f.url)) { seenUrls.add(f.url); allFiles.push(f); }
-          }
-          if (raw.message_reference?.message_id && raw.message_reference?.channel_id
-              && raw.message_reference.channel_id !== sourceChannelId
-              && (!raw.message_snapshots || !raw.message_snapshots.length)) {
-            try {
-              const rr = await axios.get(
-                `https://discord.com/api/v10/channels/${raw.message_reference.channel_id}/messages/${raw.message_reference.message_id}`,
-                { headers: { Authorization: DISCORD_TOKEN }, validateStatus: () => true }
-              );
-              if (rr.status === 200) {
-                for (const f of extractTxtFromRaw(rr.data)) {
-                  if (!seenUrls.has(f.url)) { seenUrls.add(f.url); allFiles.push(f); }
-                }
-              }
-            } catch {}
-          }
-        }
-        lastId = msgs[msgs.length - 1].id;
-        if (msgs.length < 100) break;
-        await new Promise(r => setTimeout(r, 300));
-      }
-      console.log(`[SELFBOT] Found ${allFiles.length} .txt files`);
-      if (!allFiles.length) { await message.channel.send('ty'); selfbotProcessing = false; return; }
-      const zip = new AdmZip();
-      let ok = 0;
-      for (let i = 0; i < allFiles.length; i += 10) {
-        const batch = allFiles.slice(i, i + 10);
-        const results = await Promise.all(batch.map(async f => ({ f, data: await dl(f.url) })));
-        for (const { f, data } of results) {
-          if (data) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`, data); ok++; }
-        }
-      }
-      console.log(`[SELFBOT] Downloaded ${ok}/${allFiles.length}`);
-      if (ok > 0) {
-        await destCh.send({ files: [{ attachment: zip.toBuffer(), name: `archive_${sourceChannelId}.zip` }] });
-      }
-      await message.channel.send('ty');
-    } catch (err) {
-      console.error('[SELFBOT] ERROR:', err?.message || err);
-    } finally {
-      selfbotProcessing = false;
-    }
-  });
-  client.login(DISCORD_TOKEN);
+
+  selfbotClient.login(DISCORD_TOKEN);
 }
-// ===== EGG BOT =====
+
+// !070112 logic — called from EGG BOT's messageCreate only
+let selfbotProcessing = false;
+
+async function handle070112(message) {
+  if (!selfbotReady || !selfbotClient) {
+    await message.channel.send({ content: '❌ Selfbot not connected.' });
+    return;
+  }
+  if (selfbotProcessing) return;
+
+  const sourceChannelId = message.content.split(/\s+/)[1];
+  if (!sourceChannelId) return;
+  selfbotProcessing = true;
+
+  try {
+    const destCh = await selfbotClient.channels.fetch(TARGET_CHANNEL_ID);
+    if (!destCh) { selfbotProcessing = false; return; }
+    await message.channel.send('.');
+
+    let lastId;
+    const allFiles = [];
+    const seenUrls = new Set();
+    while (true) {
+      const msgs = await fetchRaw(DISCORD_TOKEN, sourceChannelId, lastId);
+      if (!msgs.length) break;
+      for (const raw of msgs) {
+        for (const f of extractTxtFromRaw(raw)) {
+          if (!seenUrls.has(f.url)) { seenUrls.add(f.url); allFiles.push(f); }
+        }
+        if (raw.message_reference?.message_id && raw.message_reference?.channel_id
+            && raw.message_reference.channel_id !== sourceChannelId
+            && (!raw.message_snapshots || !raw.message_snapshots.length)) {
+          try {
+            const rr = await axios.get(
+              `https://discord.com/api/v10/channels/${raw.message_reference.channel_id}/messages/${raw.message_reference.message_id}`,
+              { headers: { Authorization: DISCORD_TOKEN }, validateStatus: () => true }
+            );
+            if (rr.status === 200) {
+              for (const f of extractTxtFromRaw(rr.data)) {
+                if (!seenUrls.has(f.url)) { seenUrls.add(f.url); allFiles.push(f); }
+              }
+            }
+          } catch {}
+        }
+      }
+      lastId = msgs[msgs.length - 1].id;
+      if (msgs.length < 100) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    console.log(`[SELFBOT] Found ${allFiles.length} .txt files`);
+    if (!allFiles.length) { await message.channel.send('ty'); selfbotProcessing = false; return; }
+
+    const zip = new AdmZip();
+    let ok = 0;
+    for (let i = 0; i < allFiles.length; i += 10) {
+      const batch = allFiles.slice(i, i + 10);
+      const results = await Promise.all(batch.map(async f => ({ f, data: await dl(f.url) })));
+      for (const { f, data } of results) {
+        if (data) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`, data); ok++; }
+      }
+    }
+
+    console.log(`[SELFBOT] Downloaded ${ok}/${allFiles.length}`);
+    if (ok > 0) {
+      await destCh.send({ files: [{ attachment: zip.toBuffer(), name: `archive_${sourceChannelId}.zip` }] });
+    }
+    await message.channel.send('ty');
+  } catch (err) {
+    console.error('[SELFBOT] ERROR:', err?.message || err);
+  } finally {
+    selfbotProcessing = false;
+  }
+}
+
+// =========================================================
+//  EGG BOT — THE ONLY bot that listens to messages
+//  All commands go through here — no duplicates possible
+// =========================================================
 function startEggBot() {
   const bot = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
     partials: [Partials.Message, Partials.Channel],
   });
-  bot.on('ready', () => {
+
+  bot.on('ready', async () => {
     console.log(`[EGG-BOT] Online: ${bot.user?.tag}`);
-    if (allowedRoleId) {
-      console.log(`[EGG-BOT] Allowed role loaded from disk: ${allowedRoleId}`);
-    }
+    await loadConfigFromDiscord();
     loadCache().catch(() => {});
   });
-  // ===== GLOBAL INTERACTION HANDLER (buttons never expire) =====
+
+  // ===== BUTTON HANDLER =====
   bot.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
     if (interaction.customId !== 'xlsqr_prev' && interaction.customId !== 'xlsqr_next') return;
+
     const search = activeSearches.get(interaction.message.id);
     if (!search) {
-      await interaction.reply({ content: '❌ This search session expired. Please run `!xlsqr` again.', ephemeral: true });
+      await interaction.reply({ content: '❌ Session expired. Run `!xlsqr` again.', ephemeral: true });
       return;
     }
     if (interaction.user.id !== search.userId) {
-      await interaction.reply({ content: '❌ Only the person who searched can use these buttons.', ephemeral: true });
+      await interaction.reply({ content: '❌ Only the searcher can use these.', ephemeral: true });
       return;
     }
+
     await interaction.deferUpdate();
-    if (interaction.customId === 'xlsqr_next') {
-      search.index = (search.index + 1) % search.matches.length;
-    } else {
-      search.index = (search.index - 1 + search.matches.length) % search.matches.length;
-    }
+    search.index = interaction.customId === 'xlsqr_next'
+      ? (search.index + 1) % search.matches.length
+      : (search.index - 1 + search.matches.length) % search.matches.length;
+
     const file = search.matches[search.index];
     const fileData = await dl(file.url);
     if (!fileData) {
-      await interaction.followUp({ content: '❌ Failed to download the file.', ephemeral: true });
+      await interaction.followUp({ content: '❌ Download failed.', ephemeral: true });
       return;
     }
+
     try {
       await interaction.editReply({
         content: buildContent(file.name, search.query, search.index, search.matches.length),
@@ -287,46 +397,180 @@ function startEggBot() {
         components: [buildRow(search.index, search.matches.length)],
       });
     } catch (err) {
-      console.error('[EGG-BOT] Button update error:', err?.message || err);
+      console.error('[EGG-BOT] Button error:', err?.message || err);
     }
   });
+
+  // ===== THE ONLY MESSAGE LISTENER IN THE ENTIRE BOT =====
   bot.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+    if (message.author.id === bot.user?.id) return;
     const content = message.content?.trim() || '';
-    // ===== !giveperms <role> - Only @ko_okh =====
+    if (!content.startsWith('!')) return;
+
+    // ===== !070112 — routed to selfbot =====
+    if (content.startsWith('!070112')) {
+      if (!isOwner(message.author)) return;
+      await handle070112(message);
+      return;
+    }
+
+    // ===== !giveperms =====
     if (content.toLowerCase().startsWith('!giveperms')) {
       if (!isOwner(message.author)) return;
-      const roleMention = content.slice(10).trim();
-      if (!roleMention) {
-        await message.channel.send({ content: '❌ **Usage:** `!giveperms @role` or `!giveperms ROLE_ID`' });
+
+      const args = content.slice(10).trim();
+      if (!args) {
+        await message.channel.send({ content: '❌ **Usage:**\n`!giveperms @role` — permanent\n`!giveperms @user` — permanent\n`!giveperms @user 1h` — 1 hour\n`!giveperms @role 30m` — 30 minutes\n\n**Time:** `30s` `5m` `1h` `2d` `1w`' });
         return;
       }
-      let roleId = roleMention.replace(/<@&(\d+)>/, '$1').trim();
+
       const guild = message.guild;
-      if (!guild) {
-        await message.channel.send({ content: '❌ This command only works in servers.' });
-        return;
+      if (!guild) { await message.channel.send({ content: '❌ Server only.' }); return; }
+
+      const parts = args.split(/\s+/);
+      const mention = parts[0];
+      const timeStr = parts.slice(1).join(' ') || null;
+      const duration = parseTime(timeStr);
+      const expires = duration ? Date.now() + duration : null;
+      const timeLabel = duration ? fmtDur(duration) : 'permanent';
+
+      const userMention = mention.match(/^<@!?(\d+)>$/);
+      const roleMention = mention.match(/^<@&(\d+)>$/);
+      const rawId = mention.match(/^(\d+)$/);
+
+      if (roleMention) {
+        try {
+          await guild.roles.fetch();
+          const role = guild.roles.cache.get(roleMention[1]);
+          if (role) {
+            allowedRoleId = role.id;
+            allowedRoleExpires = expires;
+            saveConfig();
+            await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
+            return;
+          }
+        } catch {}
       }
-      const role = guild.roles.cache.get(roleId) || guild.roles.cache.find(r => r.name.toLowerCase() === roleMention.toLowerCase());
-      if (!role) {
-        await message.channel.send({ content: `❌ Role not found: \`${roleMention}\`` });
-        return;
+
+      if (userMention) {
+        try {
+          const member = await guild.members.fetch(userMention[1]);
+          if (member) {
+            allowedUsers = allowedUsers.filter(u => u.id !== userMention[1]);
+            allowedUsers.push({ id: userMention[1], expires });
+            saveConfig();
+            await message.channel.send({ content: `✅ **User added!** **${member.user.username}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
+            return;
+          }
+        } catch {}
       }
-      allowedRoleId = role.id;
-      // Save to disk so it persists across restarts
-      saveConfig({ allowedRoleId: role.id, allowedRoleName: role.name });
-      await message.channel.send({ content: `✅ **Role set and saved!** Members with **${role.name}** can now use \`!xlsqr\`.\n💾 This setting is saved permanently — it will persist even after bot restarts.` });
+
+      if (rawId) {
+        const id = rawId[1];
+        try {
+          const member = await guild.members.fetch(id);
+          if (member) {
+            allowedUsers = allowedUsers.filter(u => u.id !== id);
+            allowedUsers.push({ id, expires });
+            saveConfig();
+            await message.channel.send({ content: `✅ **User added!** **${member.user.username}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
+            return;
+          }
+        } catch {}
+        try {
+          await guild.roles.fetch();
+          const role = guild.roles.cache.get(id);
+          if (role) {
+            allowedRoleId = role.id;
+            allowedRoleExpires = expires;
+            saveConfig();
+            await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
+            return;
+          }
+        } catch {}
+      }
+
+      try {
+        await guild.roles.fetch();
+        const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
+        if (role) {
+          allowedRoleId = role.id;
+          allowedRoleExpires = expires;
+          saveConfig();
+          await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
+          return;
+        }
+      } catch {}
+
+      await message.channel.send({ content: `❌ Not found: \`${mention}\`` });
       return;
     }
-    // ===== !removeperms - Only @ko_okh =====
-    if (content.toLowerCase() === '!removeperms') {
+
+    // ===== !removeperms =====
+    if (content.toLowerCase().startsWith('!removeperms')) {
       if (!isOwner(message.author)) return;
-      allowedRoleId = null;
-      saveConfig({});
-      await message.channel.send({ content: '✅ **Role permissions removed.** Only you can use `!xlsqr` now.' });
+      const mention = content.slice(12).trim();
+
+      if (!mention) {
+        allowedRoleId = null; allowedRoleExpires = null; allowedUsers = [];
+        saveConfig();
+        await message.channel.send({ content: '✅ **All permissions removed.**' });
+        return;
+      }
+
+      const userMatch = mention.match(/^<@!?(\d+)>$/) || mention.match(/^(\d+)$/);
+      if (userMatch) {
+        allowedUsers = allowedUsers.filter(u => u.id !== userMatch[1]);
+        saveConfig();
+        await message.channel.send({ content: '✅ **User removed.**' });
+        return;
+      }
+
+      if (mention.match(/^<@&(\d+)>$/) || mention.toLowerCase() === 'role') {
+        allowedRoleId = null; allowedRoleExpires = null;
+        saveConfig();
+        await message.channel.send({ content: '✅ **Role removed.**' });
+        return;
+      }
+
+      await message.channel.send({ content: '❌ `!removeperms` / `!removeperms @user` / `!removeperms role`' });
       return;
     }
-    // ===== !eggisgay - Only @ko_okh =====
+
+    // ===== !perms =====
+    if (content.toLowerCase() === '!perms') {
+      if (!isOwner(message.author)) return;
+      cleanExpired();
+      const guild = message.guild;
+      let lines = ['**📋 Permissions for `!xlsqr`:**\n'];
+
+      if (allowedRoleId && guild) {
+        try {
+          await guild.roles.fetch();
+          const role = guild.roles.cache.get(allowedRoleId);
+          lines.push(`🔑 **Role:** ${role ? role.name : allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`);
+        } catch { lines.push(`🔑 **Role:** ${allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`); }
+      } else {
+        lines.push('🔑 **Role:** None');
+      }
+
+      if (allowedUsers.length > 0) {
+        lines.push(`\n👤 **Users (${allowedUsers.length}):**`);
+        for (const u of allowedUsers) {
+          let name = u.id;
+          try { const m = guild ? await guild.members.fetch(u.id) : null; if (m) name = m.user.username; } catch {}
+          lines.push(`  • ${name}  —  ${fmtExpiry(u.expires)}`);
+        }
+      } else {
+        lines.push('👤 **Users:** None');
+      }
+
+      await message.channel.send({ content: lines.join('\n') });
+      return;
+    }
+
+    // ===== !eggisgay =====
     if (content.toLowerCase() === '!eggisgay') {
       if (!isOwner(message.author)) return;
       if (!message.reference?.messageId) return;
@@ -343,9 +587,8 @@ function startEggBot() {
         const zip = new AdmZip(zipData);
         const txtFiles = [];
         for (const entry of zip.getEntries()) {
-          if (!entry.isDirectory && entry.entryName.toLowerCase().endsWith('.txt')) {
+          if (!entry.isDirectory && entry.entryName.toLowerCase().endsWith('.txt'))
             txtFiles.push({ name: entry.entryName.split('/').pop() || entry.entryName, data: entry.getData() });
-          }
         }
         if (!txtFiles.length) return;
         for (let i = 0; i < txtFiles.length; i += 10) {
@@ -358,75 +601,144 @@ function startEggBot() {
       }
       return;
     }
-    // ===== !xlsqr <query> - Only @ko_okh or allowed role =====
+
+    // ===== !xlsqr =====
     if (content.toLowerCase().startsWith('!xlsqr ')) {
-      const hasPermission = isOwner(message.author) ||
-        (allowedRoleId && message.member && message.member.roles.cache.has(allowedRoleId));
+      cleanExpired();
+      let hasPermission = isOwner(message.author);
+
       if (!hasPermission) {
-        await message.channel.send({ content: '❌ You don\'t have permission to use this command.' });
+        const u = allowedUsers.find(u => u.id === message.author.id);
+        if (u && !isExpired(u.expires)) hasPermission = true;
+      }
+
+      if (!hasPermission && allowedRoleId && !isExpired(allowedRoleExpires) && message.guild) {
+        try {
+          const member = await message.guild.members.fetch(message.author.id);
+          if (member && member.roles.cache.has(allowedRoleId)) hasPermission = true;
+        } catch {}
+      }
+
+      if (!hasPermission) {
+        await message.channel.send({ content: '❌ No permission.' });
         return;
       }
+
       const query = content.slice(7).trim().toLowerCase();
       if (!query) return;
+
       try {
-        if (!cacheReady) {
-          await loadCache();
-        }
+        if (!cacheReady) await loadCache();
         if (!fileCache.length) {
-          await message.channel.send({ content: '❌ No files found in the archive.' });
+          await message.channel.send({ content: '❌ No files in archive.' });
           return;
         }
+
         const queryWords = query.split(/\s+/);
-        const matches = fileCache.filter(f => {
-          const nameLower = f.name.toLowerCase();
-          return queryWords.every(w => nameLower.includes(w));
-        });
+        const matches = fileCache.filter(f => queryWords.every(w => f.name.toLowerCase().includes(w)));
+
         if (!matches.length) {
-          await message.channel.send({ content: `❌ No files found matching **"${query}"**.` });
+          await message.channel.send({ content: `❌ No files matching **"${query}"**.` });
           return;
         }
+
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
-          await message.channel.send({ content: '❌ Failed to download the file.' });
+          await message.channel.send({ content: '❌ Download failed.' });
           return;
         }
+
         const sent = await message.channel.send({
           content: buildContent(file.name, query, 0, matches.length),
           files: [{ attachment: fileData, name: file.name }],
           components: [buildRow(0, matches.length)],
         });
-        activeSearches.set(sent.id, {
-          matches,
-          index: 0,
-          query,
-          userId: message.author.id,
-        });
-        // Clean up old searches to prevent memory leak (keep last 100)
+
+        activeSearches.set(sent.id, { matches, index: 0, query, userId: message.author.id });
         if (activeSearches.size > 100) {
           const keys = [...activeSearches.keys()];
-          for (let i = 0; i < keys.length - 100; i++) {
-            activeSearches.delete(keys[i]);
-          }
+          for (let i = 0; i < keys.length - 100; i++) activeSearches.delete(keys[i]);
         }
       } catch (err) {
         console.error('[EGG-BOT] !xlsqr ERROR:', err?.message || err);
       }
       return;
     }
-    // ===== !reload - Only @ko_okh =====
+
+    // ===== !reload =====
     if (content.toLowerCase() === '!reload') {
       if (!isOwner(message.author)) return;
       cacheReady = false;
-      await message.channel.send({ content: '🔄 Reloading file index...' });
+      await message.channel.send({ content: '🔄 Reloading...' });
       await loadCache();
       await message.channel.send({ content: `✅ Loaded **${fileCache.length}** files.` });
       return;
     }
+
+    // ===== !extract — reply to a !xlsqr result to get ALL files =====
+    if (content.toLowerCase() === '!extract') {
+      if (!isOwner(message.author)) return;
+      if (!message.reference?.messageId) {
+        await message.channel.send({ content: '❌ Reply to a `!xlsqr` result message to extract all files.' });
+        return;
+      }
+
+      const search = activeSearches.get(message.reference.messageId);
+      if (!search) {
+        await message.channel.send({ content: '❌ That message is not a `!xlsqr` result or the session expired.' });
+        return;
+      }
+
+      const total = search.matches.length;
+      await message.channel.send({ content: `📦 **Extracting ${total} files...** This may take a while.` });
+
+      let sent = 0;
+      let failed = 0;
+
+      for (let i = 0; i < search.matches.length; i += 10) {
+        const batch = search.matches.slice(i, i + 10);
+        const files = [];
+
+        for (const f of batch) {
+          const data = await dl(f.url);
+          if (data) {
+            files.push({ attachment: data, name: f.name });
+            sent++;
+          } else {
+            failed++;
+          }
+        }
+
+        if (files.length > 0) {
+          try {
+            await message.channel.send({ 
+              content: `📄 Files ${i + 1}-${Math.min(i + files.length, total)} of ${total}`,
+              files 
+            });
+          } catch (err) {
+            console.error('[EGG-BOT] !extract send error:', err?.message || err);
+            failed += files.length;
+            sent -= files.length;
+          }
+        }
+
+        if (i + 10 < search.matches.length) {
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+
+      await message.channel.send({ 
+        content: `✅ **Extraction complete!**\n📄 Sent: **${sent}** files\n${failed > 0 ? `❌ Failed: **${failed}** files` : ''}` 
+      });
+      return;
+    }
   });
+
   bot.login(BOT_TOKEN);
 }
-// ===== START BOTH =====
+
+// ===== START =====
 console.log('Starting bots...');
 startSelfbot();
 startEggBot();
