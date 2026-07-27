@@ -11,6 +11,9 @@ const SEARCH_CHANNEL = '1530426488112021674';
 const OWNER_USERNAME = 'ko_okh';
 // ===== ALLOWED ROLE for !xlsqr (set with !giveperms) =====
 let allowedRoleId = null;
+// ===== ACTIVE SEARCHES (persist across interactions) =====
+// key = messageId, value = { matches, index, query, userId }
+const activeSearches = new Map();
 // ===== UTILS =====
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
 function isOwner(user) {
@@ -114,6 +117,35 @@ async function loadCache() {
   cacheLoading = false;
   console.log(`[BOT] Cache loaded: ${all.length} files in ${batches} batches`);
 }
+// ===== SHARED HELPERS FOR !xlsqr =====
+function buildRow(idx, total) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('xlsqr_prev')
+      .setEmoji('⬅️')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(total <= 1),
+    new ButtonBuilder()
+      .setCustomId('xlsqr_page')
+      .setLabel(`${idx + 1} / ${total}`)
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId('xlsqr_next')
+      .setEmoji('➡️')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(total <= 1)
+  );
+}
+function buildContent(fileName, query, idx, total) {
+  const bar = '━'.repeat(28);
+  return [
+    bar,
+    `📄  **${fileName}**`,
+    `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${total}**`,
+    bar,
+  ].join('\n');
+}
 // ===== SELFBOT (for !070112) =====
 let selfbotProcessing = false;
 function startSelfbot() {
@@ -123,7 +155,6 @@ function startSelfbot() {
   });
   client.on('messageCreate', async (message) => {
     if (!message.content?.startsWith('!070112')) return;
-    // Only @ko_okh can use this command
     if (!isOwner(message.author)) return;
     if (selfbotProcessing) return;
     const sourceChannelId = message.content.split(/\s+/)[1];
@@ -187,7 +218,7 @@ function startSelfbot() {
   });
   client.login(DISCORD_TOKEN);
 }
-// ===== EGG BOT (for !eggisgay, !xlsqr, !giveperms, !reload) =====
+// ===== EGG BOT =====
 function startEggBot() {
   const bot = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
@@ -196,6 +227,41 @@ function startEggBot() {
   bot.on('ready', () => {
     console.log(`[EGG-BOT] Online: ${bot.user?.tag}`);
     loadCache().catch(() => {});
+  });
+  // ===== GLOBAL INTERACTION HANDLER (buttons never expire, survives restarts) =====
+  bot.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+    if (interaction.customId !== 'xlsqr_prev' && interaction.customId !== 'xlsqr_next') return;
+    const search = activeSearches.get(interaction.message.id);
+    if (!search) {
+      await interaction.reply({ content: '❌ This search session expired. Please run `!xlsqr` again.', ephemeral: true });
+      return;
+    }
+    if (interaction.user.id !== search.userId) {
+      await interaction.reply({ content: '❌ Only the person who searched can use these buttons.', ephemeral: true });
+      return;
+    }
+    await interaction.deferUpdate();
+    if (interaction.customId === 'xlsqr_next') {
+      search.index = (search.index + 1) % search.matches.length;
+    } else {
+      search.index = (search.index - 1 + search.matches.length) % search.matches.length;
+    }
+    const file = search.matches[search.index];
+    const fileData = await dl(file.url);
+    if (!fileData) {
+      await interaction.followUp({ content: '❌ Failed to download the file.', ephemeral: true });
+      return;
+    }
+    try {
+      await interaction.editReply({
+        content: buildContent(file.name, search.query, search.index, search.matches.length),
+        files: [{ attachment: fileData, name: file.name }],
+        components: [buildRow(search.index, search.matches.length)],
+      });
+    } catch (err) {
+      console.error('[EGG-BOT] Button update error:', err?.message || err);
+    }
   });
   bot.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -208,7 +274,6 @@ function startEggBot() {
         await message.channel.send({ content: '❌ **Usage:** `!giveperms @role` or `!giveperms ROLE_ID`' });
         return;
       }
-      // Extract role ID from mention or direct ID
       let roleId = roleMention.replace(/<@&(\d+)>/, '$1').trim();
       const guild = message.guild;
       if (!guild) {
@@ -267,7 +332,6 @@ function startEggBot() {
       const query = content.slice(7).trim().toLowerCase();
       if (!query) return;
       try {
-        // Load cache silently if not ready
         if (!cacheReady) {
           await loadCache();
         }
@@ -284,37 +348,6 @@ function startEggBot() {
           await message.channel.send({ content: `❌ No files found matching **"${query}"**.` });
           return;
         }
-        let index = 0;
-        const buildRow = (idx) => {
-          const row = new ActionRowBuilder();
-          row.addComponents(
-            new ButtonBuilder()
-              .setCustomId('xlsqr_prev')
-              .setEmoji('⬅️')
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(matches.length <= 1),
-            new ButtonBuilder()
-              .setCustomId('xlsqr_page')
-              .setLabel(`${idx + 1} / ${matches.length}`)
-              .setStyle(ButtonStyle.Primary)
-              .setDisabled(true),
-            new ButtonBuilder()
-              .setCustomId('xlsqr_next')
-              .setEmoji('➡️')
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(matches.length <= 1)
-          );
-          return row;
-        };
-        const buildContent = (f, idx) => {
-          const bar = '━'.repeat(28);
-          return [
-            `${bar}`,
-            `📄  **${f.name}**`,
-            `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${matches.length}**`,
-            `${bar}`,
-          ].join('\n');
-        };
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
@@ -322,37 +355,24 @@ function startEggBot() {
           return;
         }
         const sent = await message.channel.send({
-          content: buildContent(file, 0),
+          content: buildContent(file.name, query, 0, matches.length),
           files: [{ attachment: fileData, name: file.name }],
-          components: [buildRow(0)],
+          components: [buildRow(0, matches.length)],
         });
-        if (matches.length <= 1) return;
-        // No timeout — buttons never expire
-        const collector = sent.createMessageComponentCollector({ componentType: ComponentType.Button });
-        collector.on('collect', async (interaction) => {
-          if (interaction.user.id !== message.author.id) {
-            await interaction.reply({ content: '❌ Only the person who searched can use these buttons.', ephemeral: true });
-            return;
-          }
-          if (interaction.customId === 'xlsqr_next') {
-            index = (index + 1) % matches.length;
-          } else if (interaction.customId === 'xlsqr_prev') {
-            index = (index - 1 + matches.length) % matches.length;
-          } else {
-            return;
-          }
-          const nextFile = matches[index];
-          const nextData = await dl(nextFile.url);
-          if (!nextData) {
-            await interaction.reply({ content: '❌ Failed to download the file.', ephemeral: true });
-            return;
-          }
-          await interaction.update({
-            content: buildContent(nextFile, index),
-            files: [{ attachment: nextData, name: nextFile.name }],
-            components: [buildRow(index)],
-          });
+        // Store search state in memory map (keyed by bot message ID)
+        activeSearches.set(sent.id, {
+          matches,
+          index: 0,
+          query,
+          userId: message.author.id,
         });
+        // Clean up old searches to prevent memory leak (keep last 100)
+        if (activeSearches.size > 100) {
+          const keys = [...activeSearches.keys()];
+          for (let i = 0; i < keys.length - 100; i++) {
+            activeSearches.delete(keys[i]);
+          }
+        }
       } catch (err) {
         console.error('[EGG-BOT] !xlsqr ERROR:', err?.message || err);
       }
