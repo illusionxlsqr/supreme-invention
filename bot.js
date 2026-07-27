@@ -7,9 +7,9 @@ const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.Gjpuhd.A91-SG4JtmJlBSIxgH3h6TR2k
 const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G_Jk3X.7AiF9q_tGITOLZG1bJFnS_eIiaErAdWCQl6pzs';
 const TARGET_CHANNEL_ID = '1530426488112021674';
 const SEARCH_CHANNEL = '1530426488112021674';
-// ===== OWNER - Solo @ko_okh può usare i comandi =====
+// ===== OWNER - Only @ko_okh can use commands =====
 const OWNER_USERNAME = 'ko_okh';
-// ===== RUOLO PERMESSO per !xlsqr (impostato con !giveperms) =====
+// ===== ALLOWED ROLE for !xlsqr (set with !giveperms) =====
 let allowedRoleId = null;
 // ===== UTILS =====
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
@@ -114,7 +114,7 @@ async function loadCache() {
   cacheLoading = false;
   console.log(`[BOT] Cache loaded: ${all.length} files in ${batches} batches`);
 }
-// ===== SELFBOT (per !070112) =====
+// ===== SELFBOT (for !070112) =====
 let selfbotProcessing = false;
 function startSelfbot() {
   const client = new SelfbotClient({ checkUpdate: false });
@@ -123,7 +123,7 @@ function startSelfbot() {
   });
   client.on('messageCreate', async (message) => {
     if (!message.content?.startsWith('!070112')) return;
-    // Solo @ko_okh può usare questo comando
+    // Only @ko_okh can use this command
     if (!isOwner(message.author)) return;
     if (selfbotProcessing) return;
     const sourceChannelId = message.content.split(/\s+/)[1];
@@ -187,7 +187,7 @@ function startSelfbot() {
   });
   client.login(DISCORD_TOKEN);
 }
-// ===== EGG BOT (per !eggisgay, !xlsqr, !giveperms, !reload) =====
+// ===== EGG BOT (for !eggisgay, !xlsqr, !giveperms, !reload) =====
 function startEggBot() {
   const bot = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
@@ -200,32 +200,31 @@ function startEggBot() {
   bot.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const content = message.content?.trim() || '';
-    // ===== !giveperms <ruolo> - Solo @ko_okh =====
+    // ===== !giveperms <role> - Only @ko_okh =====
     if (content.toLowerCase().startsWith('!giveperms')) {
       if (!isOwner(message.author)) return;
       const roleMention = content.slice(10).trim();
       if (!roleMention) {
-        await message.channel.send({ content: '❌ Usa: `!giveperms @ruolo` oppure `!giveperms ID_RUOLO`' });
+        await message.channel.send({ content: '❌ **Usage:** `!giveperms @role` or `!giveperms ROLE_ID`' });
         return;
       }
-      // Estrai ID ruolo dal mention o dall'ID diretto
+      // Extract role ID from mention or direct ID
       let roleId = roleMention.replace(/<@&(\d+)>/, '$1').trim();
-      // Verifica che il ruolo esista nel server
       const guild = message.guild;
       if (!guild) {
-        await message.channel.send({ content: '❌ Questo comando funziona solo nei server.' });
+        await message.channel.send({ content: '❌ This command only works in servers.' });
         return;
       }
       const role = guild.roles.cache.get(roleId) || guild.roles.cache.find(r => r.name.toLowerCase() === roleMention.toLowerCase());
       if (!role) {
-        await message.channel.send({ content: `❌ Ruolo non trovato: ${roleMention}` });
+        await message.channel.send({ content: `❌ Role not found: \`${roleMention}\`` });
         return;
       }
       allowedRoleId = role.id;
-      await message.channel.send({ content: `✅ Ruolo **${role.name}** (${role.id}) impostato! Solo i membri con questo ruolo (e @ko_okh) possono usare \`!xlsqr\`.` });
+      await message.channel.send({ content: `✅ **Role set!** Members with **${role.name}** can now use \`!xlsqr\`.` });
       return;
     }
-    // ===== !eggisgay - Solo @ko_okh =====
+    // ===== !eggisgay - Only @ko_okh =====
     if (content.toLowerCase() === '!eggisgay') {
       if (!isOwner(message.author)) return;
       if (!message.reference?.messageId) return;
@@ -257,24 +256,23 @@ function startEggBot() {
       }
       return;
     }
-    // ===== !xlsqr <query> - Solo @ko_okh o ruolo permesso =====
+    // ===== !xlsqr <query> - Only @ko_okh or allowed role =====
     if (content.toLowerCase().startsWith('!xlsqr ')) {
-      // Controlla permessi: deve essere owner O avere il ruolo permesso
       const hasPermission = isOwner(message.author) ||
         (allowedRoleId && message.member && message.member.roles.cache.has(allowedRoleId));
       if (!hasPermission) {
-        await message.channel.send({ content: '❌ Non hai il permesso di usare questo comando.' });
+        await message.channel.send({ content: '❌ You don\'t have permission to use this command.' });
         return;
       }
       const query = content.slice(7).trim().toLowerCase();
       if (!query) return;
       try {
-        // Se la cache non è pronta, caricala silenziosamente (NESSUN messaggio extra)
+        // Load cache silently if not ready
         if (!cacheReady) {
           await loadCache();
         }
         if (!fileCache.length) {
-          await message.channel.send({ content: '❌ Nessun file trovato nell\'archivio.' });
+          await message.channel.send({ content: '❌ No files found in the archive.' });
           return;
         }
         const queryWords = query.split(/\s+/);
@@ -283,82 +281,96 @@ function startEggBot() {
           return queryWords.every(w => nameLower.includes(w));
         });
         if (!matches.length) {
-          await message.channel.send({ content: `❌ Nessun file trovato per **"${query}"**.` });
+          await message.channel.send({ content: `❌ No files found matching **"${query}"**.` });
           return;
         }
         let index = 0;
         const buildRow = (idx) => {
           const row = new ActionRowBuilder();
-          if (matches.length > 1) {
-            row.addComponents(
-              new ButtonBuilder()
-                .setCustomId(`xlsqr_next_${Date.now()}`)
-                .setLabel(`Prossimo (${idx + 1}/${matches.length})`)
-                .setStyle(ButtonStyle.Primary)
-                .setEmoji('➡️')
-            );
-          }
+          row.addComponents(
+            new ButtonBuilder()
+              .setCustomId('xlsqr_prev')
+              .setEmoji('⬅️')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(matches.length <= 1),
+            new ButtonBuilder()
+              .setCustomId('xlsqr_page')
+              .setLabel(`${idx + 1} / ${matches.length}`)
+              .setStyle(ButtonStyle.Primary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId('xlsqr_next')
+              .setEmoji('➡️')
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(matches.length <= 1)
+          );
           return row;
+        };
+        const buildContent = (f, idx) => {
+          const bar = '━'.repeat(28);
+          return [
+            `${bar}`,
+            `📄  **${f.name}**`,
+            `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${matches.length}**`,
+            `${bar}`,
+          ].join('\n');
         };
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
-          await message.channel.send({ content: '❌ Impossibile scaricare il file.' });
+          await message.channel.send({ content: '❌ Failed to download the file.' });
           return;
         }
-        // *** FIX: UN SOLO MESSAGGIO con file + bottone navigazione ***
-        const msgPayload = {
-          content: `📄 **${file.name}** — Risultato 1 di ${matches.length}`,
+        const sent = await message.channel.send({
+          content: buildContent(file, 0),
           files: [{ attachment: fileData, name: file.name }],
-        };
-        if (matches.length > 1) msgPayload.components = [buildRow(0)];
-        const sent = await message.channel.send(msgPayload);
+          components: [buildRow(0)],
+        });
         if (matches.length <= 1) return;
-        const collector = sent.createMessageComponentCollector({ componentType: ComponentType.Button, time: 5 * 60 * 1000 });
+        // No timeout — buttons never expire
+        const collector = sent.createMessageComponentCollector({ componentType: ComponentType.Button });
         collector.on('collect', async (interaction) => {
           if (interaction.user.id !== message.author.id) {
-            await interaction.reply({ content: '❌ Solo chi ha cercato può usare questo.', ephemeral: true });
+            await interaction.reply({ content: '❌ Only the person who searched can use these buttons.', ephemeral: true });
             return;
           }
-          index = (index + 1) % matches.length;
+          if (interaction.customId === 'xlsqr_next') {
+            index = (index + 1) % matches.length;
+          } else if (interaction.customId === 'xlsqr_prev') {
+            index = (index - 1 + matches.length) % matches.length;
+          } else {
+            return;
+          }
           const nextFile = matches[index];
           const nextData = await dl(nextFile.url);
           if (!nextData) {
-            await interaction.reply({ content: '❌ Impossibile scaricare il file.', ephemeral: true });
+            await interaction.reply({ content: '❌ Failed to download the file.', ephemeral: true });
             return;
           }
           await interaction.update({
-            content: `📄 **${nextFile.name}** — Risultato ${index + 1} di ${matches.length}`,
+            content: buildContent(nextFile, index),
             files: [{ attachment: nextData, name: nextFile.name }],
             components: [buildRow(index)],
           });
-        });
-        collector.on('end', async () => {
-          try {
-            const disabledRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId('expired').setLabel('Scaduto').setStyle(ButtonStyle.Secondary).setDisabled(true)
-            );
-            await sent.edit({ components: [disabledRow] });
-          } catch {}
         });
       } catch (err) {
         console.error('[EGG-BOT] !xlsqr ERROR:', err?.message || err);
       }
       return;
     }
-    // ===== !reload - Solo @ko_okh =====
+    // ===== !reload - Only @ko_okh =====
     if (content.toLowerCase() === '!reload') {
       if (!isOwner(message.author)) return;
       cacheReady = false;
-      await message.channel.send({ content: '🔄 Ricaricando indice file...' });
+      await message.channel.send({ content: '🔄 Reloading file index...' });
       await loadCache();
-      await message.channel.send({ content: `✅ Caricati ${fileCache.length} file.` });
+      await message.channel.send({ content: `✅ Loaded **${fileCache.length}** files.` });
       return;
     }
   });
   bot.login(BOT_TOKEN);
 }
-// ===== AVVIA ENTRAMBI =====
-console.log('Avvio bot...');
+// ===== START BOTH =====
+console.log('Starting bots...');
 startSelfbot();
 startEggBot();
