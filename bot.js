@@ -1,7 +1,9 @@
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
+onst { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 // ===== CONFIG =====
 const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.Gjpuhd.A91-SG4JtmJlBSIxgH3h6TR2kqMEg71V5v7KxE';
 const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G_Jk3X.7AiF9q_tGITOLZG1bJFnS_eIiaErAdWCQl6pzs';
@@ -9,10 +11,32 @@ const TARGET_CHANNEL_ID = '1530426488112021674';
 const SEARCH_CHANNEL = '1530426488112021674';
 // ===== OWNER - Only @ko_okh can use commands =====
 const OWNER_USERNAME = 'ko_okh';
-// ===== ALLOWED ROLE for !xlsqr (set with !giveperms) =====
-let allowedRoleId = null;
+// ===== PERSISTENT CONFIG FILE =====
+const CONFIG_FILE = path.join(__dirname, 'bot-config.json');
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      return data;
+    }
+  } catch (err) {
+    console.error('[CONFIG] Failed to load config:', err.message);
+  }
+  return {};
+}
+function saveConfig(config) {
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+    console.log('[CONFIG] Saved config to disk');
+  } catch (err) {
+    console.error('[CONFIG] Failed to save config:', err.message);
+  }
+}
+// Load saved config on startup
+const savedConfig = loadConfig();
+let allowedRoleId = savedConfig.allowedRoleId || null;
+console.log(`[CONFIG] Loaded allowedRoleId: ${allowedRoleId || 'none'}`);
 // ===== ACTIVE SEARCHES (persist across interactions) =====
-// key = messageId, value = { matches, index, query, userId }
 const activeSearches = new Map();
 // ===== UTILS =====
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
@@ -226,9 +250,12 @@ function startEggBot() {
   });
   bot.on('ready', () => {
     console.log(`[EGG-BOT] Online: ${bot.user?.tag}`);
+    if (allowedRoleId) {
+      console.log(`[EGG-BOT] Allowed role loaded from disk: ${allowedRoleId}`);
+    }
     loadCache().catch(() => {});
   });
-  // ===== GLOBAL INTERACTION HANDLER (buttons never expire, survives restarts) =====
+  // ===== GLOBAL INTERACTION HANDLER (buttons never expire) =====
   bot.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
     if (interaction.customId !== 'xlsqr_prev' && interaction.customId !== 'xlsqr_next') return;
@@ -286,7 +313,17 @@ function startEggBot() {
         return;
       }
       allowedRoleId = role.id;
-      await message.channel.send({ content: `✅ **Role set!** Members with **${role.name}** can now use \`!xlsqr\`.` });
+      // Save to disk so it persists across restarts
+      saveConfig({ allowedRoleId: role.id, allowedRoleName: role.name });
+      await message.channel.send({ content: `✅ **Role set and saved!** Members with **${role.name}** can now use \`!xlsqr\`.\n💾 This setting is saved permanently — it will persist even after bot restarts.` });
+      return;
+    }
+    // ===== !removeperms - Only @ko_okh =====
+    if (content.toLowerCase() === '!removeperms') {
+      if (!isOwner(message.author)) return;
+      allowedRoleId = null;
+      saveConfig({});
+      await message.channel.send({ content: '✅ **Role permissions removed.** Only you can use `!xlsqr` now.' });
       return;
     }
     // ===== !eggisgay - Only @ko_okh =====
@@ -359,7 +396,6 @@ function startEggBot() {
           files: [{ attachment: fileData, name: file.name }],
           components: [buildRow(0, matches.length)],
         });
-        // Store search state in memory map (keyed by bot message ID)
         activeSearches.set(sent.id, {
           matches,
           index: 0,
