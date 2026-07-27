@@ -7,8 +7,15 @@ const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.Gjpuhd.A91-SG4JtmJlBSIxgH3h6TR2k
 const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G_Jk3X.7AiF9q_tGITOLZG1bJFnS_eIiaErAdWCQl6pzs';
 const TARGET_CHANNEL_ID = '1530426488112021674';
 const SEARCH_CHANNEL = '1530426488112021674';
+// ===== OWNER - Solo @ko_okh può usare i comandi =====
+const OWNER_USERNAME = 'ko_okh';
+// ===== RUOLO PERMESSO per !xlsqr (impostato con !giveperms) =====
+let allowedRoleId = null;
 // ===== UTILS =====
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
+function isOwner(user) {
+  return user.username === OWNER_USERNAME;
+}
 function extractTxtFromRaw(raw) {
   const files = [];
   const seen = new Set();
@@ -107,7 +114,7 @@ async function loadCache() {
   cacheLoading = false;
   console.log(`[BOT] Cache loaded: ${all.length} files in ${batches} batches`);
 }
-// ===== SELFBOT (for !070112) =====
+// ===== SELFBOT (per !070112) =====
 let selfbotProcessing = false;
 function startSelfbot() {
   const client = new SelfbotClient({ checkUpdate: false });
@@ -116,6 +123,8 @@ function startSelfbot() {
   });
   client.on('messageCreate', async (message) => {
     if (!message.content?.startsWith('!070112')) return;
+    // Solo @ko_okh può usare questo comando
+    if (!isOwner(message.author)) return;
     if (selfbotProcessing) return;
     const sourceChannelId = message.content.split(/\s+/)[1];
     if (!sourceChannelId) return;
@@ -178,10 +187,10 @@ function startSelfbot() {
   });
   client.login(DISCORD_TOKEN);
 }
-// ===== EGG BOT (for !eggisgay and !xlsqr) =====
+// ===== EGG BOT (per !eggisgay, !xlsqr, !giveperms, !reload) =====
 function startEggBot() {
   const bot = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
     partials: [Partials.Message, Partials.Channel],
   });
   bot.on('ready', () => {
@@ -191,8 +200,34 @@ function startEggBot() {
   bot.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     const content = message.content?.trim() || '';
-    // ===== !eggisgay =====
+    // ===== !giveperms <ruolo> - Solo @ko_okh =====
+    if (content.toLowerCase().startsWith('!giveperms')) {
+      if (!isOwner(message.author)) return;
+      const roleMention = content.slice(10).trim();
+      if (!roleMention) {
+        await message.channel.send({ content: '❌ Usa: `!giveperms @ruolo` oppure `!giveperms ID_RUOLO`' });
+        return;
+      }
+      // Estrai ID ruolo dal mention o dall'ID diretto
+      let roleId = roleMention.replace(/<@&(\d+)>/, '$1').trim();
+      // Verifica che il ruolo esista nel server
+      const guild = message.guild;
+      if (!guild) {
+        await message.channel.send({ content: '❌ Questo comando funziona solo nei server.' });
+        return;
+      }
+      const role = guild.roles.cache.get(roleId) || guild.roles.cache.find(r => r.name.toLowerCase() === roleMention.toLowerCase());
+      if (!role) {
+        await message.channel.send({ content: `❌ Ruolo non trovato: ${roleMention}` });
+        return;
+      }
+      allowedRoleId = role.id;
+      await message.channel.send({ content: `✅ Ruolo **${role.name}** (${role.id}) impostato! Solo i membri con questo ruolo (e @ko_okh) possono usare \`!xlsqr\`.` });
+      return;
+    }
+    // ===== !eggisgay - Solo @ko_okh =====
     if (content.toLowerCase() === '!eggisgay') {
+      if (!isOwner(message.author)) return;
       if (!message.reference?.messageId) return;
       try {
         const refMsg = await message.channel.messages.fetch(message.reference.messageId);
@@ -222,17 +257,24 @@ function startEggBot() {
       }
       return;
     }
-    // ===== !xlsqr <query> =====
+    // ===== !xlsqr <query> - Solo @ko_okh o ruolo permesso =====
     if (content.toLowerCase().startsWith('!xlsqr ')) {
+      // Controlla permessi: deve essere owner O avere il ruolo permesso
+      const hasPermission = isOwner(message.author) ||
+        (allowedRoleId && message.member && message.member.roles.cache.has(allowedRoleId));
+      if (!hasPermission) {
+        await message.channel.send({ content: '❌ Non hai il permesso di usare questo comando.' });
+        return;
+      }
       const query = content.slice(7).trim().toLowerCase();
       if (!query) return;
       try {
+        // Se la cache non è pronta, caricala silenziosamente (NESSUN messaggio extra)
         if (!cacheReady) {
-          await message.channel.send({ content: '⏳ Loading file index, please wait...' });
           await loadCache();
         }
         if (!fileCache.length) {
-          await message.channel.send({ content: '❌ No files found in the archive.' });
+          await message.channel.send({ content: '❌ Nessun file trovato nell\'archivio.' });
           return;
         }
         const queryWords = query.split(/\s+/);
@@ -241,7 +283,7 @@ function startEggBot() {
           return queryWords.every(w => nameLower.includes(w));
         });
         if (!matches.length) {
-          await message.channel.send({ content: `❌ No file matching **"${query}"** found.` });
+          await message.channel.send({ content: `❌ Nessun file trovato per **"${query}"**.` });
           return;
         }
         let index = 0;
@@ -251,7 +293,7 @@ function startEggBot() {
             row.addComponents(
               new ButtonBuilder()
                 .setCustomId(`xlsqr_next_${Date.now()}`)
-                .setLabel(`Next (${idx + 1}/${matches.length})`)
+                .setLabel(`Prossimo (${idx + 1}/${matches.length})`)
                 .setStyle(ButtonStyle.Primary)
                 .setEmoji('➡️')
             );
@@ -261,11 +303,12 @@ function startEggBot() {
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
-          await message.channel.send({ content: '❌ Failed to download the file.' });
+          await message.channel.send({ content: '❌ Impossibile scaricare il file.' });
           return;
         }
+        // *** FIX: UN SOLO MESSAGGIO con file + bottone navigazione ***
         const msgPayload = {
-          content: `📄 **${file.name}** — Result ${1} of ${matches.length}`,
+          content: `📄 **${file.name}** — Risultato 1 di ${matches.length}`,
           files: [{ attachment: fileData, name: file.name }],
         };
         if (matches.length > 1) msgPayload.components = [buildRow(0)];
@@ -274,18 +317,18 @@ function startEggBot() {
         const collector = sent.createMessageComponentCollector({ componentType: ComponentType.Button, time: 5 * 60 * 1000 });
         collector.on('collect', async (interaction) => {
           if (interaction.user.id !== message.author.id) {
-            await interaction.reply({ content: '❌ Only the person who searched can use this.', ephemeral: true });
+            await interaction.reply({ content: '❌ Solo chi ha cercato può usare questo.', ephemeral: true });
             return;
           }
           index = (index + 1) % matches.length;
           const nextFile = matches[index];
           const nextData = await dl(nextFile.url);
           if (!nextData) {
-            await interaction.reply({ content: '❌ Failed to download the file.', ephemeral: true });
+            await interaction.reply({ content: '❌ Impossibile scaricare il file.', ephemeral: true });
             return;
           }
           await interaction.update({
-            content: `📄 **${nextFile.name}** — Result ${index + 1} of ${matches.length}`,
+            content: `📄 **${nextFile.name}** — Risultato ${index + 1} di ${matches.length}`,
             files: [{ attachment: nextData, name: nextFile.name }],
             components: [buildRow(index)],
           });
@@ -293,7 +336,7 @@ function startEggBot() {
         collector.on('end', async () => {
           try {
             const disabledRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId('expired').setLabel('Expired').setStyle(ButtonStyle.Secondary).setDisabled(true)
+              new ButtonBuilder().setCustomId('expired').setLabel('Scaduto').setStyle(ButtonStyle.Secondary).setDisabled(true)
             );
             await sent.edit({ components: [disabledRow] });
           } catch {}
@@ -303,18 +346,19 @@ function startEggBot() {
       }
       return;
     }
-    // ===== !reload =====
+    // ===== !reload - Solo @ko_okh =====
     if (content.toLowerCase() === '!reload') {
+      if (!isOwner(message.author)) return;
       cacheReady = false;
-      await message.channel.send({ content: '🔄 Reloading file index...' });
+      await message.channel.send({ content: '🔄 Ricaricando indice file...' });
       await loadCache();
-      await message.channel.send({ content: `✅ Loaded ${fileCache.length} files.` });
+      await message.channel.send({ content: `✅ Caricati ${fileCache.length} file.` });
       return;
     }
   });
   bot.login(BOT_TOKEN);
 }
-// ===== START BOTH =====
-console.log('Starting bots...');
+// ===== AVVIA ENTRAMBI =====
+console.log('Avvio bot...');
 startSelfbot();
 startEggBot();
