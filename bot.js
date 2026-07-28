@@ -5,623 +5,582 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
+// ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
 const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
-const ARCHIVE_ALLOWED = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
-const ARCHIVE_URL = process.env.ARCHIVE_UPLOAD_URL || "";
-const ARCHIVE_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
-const SRC_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1530426488112021674,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
+const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
+const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
+const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
+const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1530426488112021674,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
 const PORT = process.env.PORT || 3000;
-const AUTH = BOT_TOKEN ? "Bot " + BOT_TOKEN : "";
+const RAW = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
 
-http.createServer(function (req, res) {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("ok");
-}).listen(PORT, "0.0.0.0");
+// ================= HEALTH (subito) =================
+http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ status: "ok", bot: bot?.user?.tag || "booting", cache: fileCache.length, up: process.uptime() }));
+}).listen(PORT, "0.0.0.0", () => console.log(`[HTTP] :${PORT}`));
 
-if (!BOT_TOKEN) {
-  console.error("BOT_TOKEN missing");
-  process.exit(1);
+if (!BOT_TOKEN) { console.error("[FATAL] BOT_TOKEN missing"); }
+
+// ================= DATA =================
+const DF = path.join(__dirname, "data.json");
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {} };
+try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8")) }; } catch {}
+if (!D.guildMembers) D.guildMembers = {};
+let st = null;
+function save() { if (st) return; st = setTimeout(() => { st = null; try { fs.writeFileSync(DF, JSON.stringify(D)); } catch {} }, 500); }
+
+// ================= HELPERS =================
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const isOwner = u => u.username === OWNER_USERNAME || OWNER_IDS.includes(u.id);
+const canArchive = u => isOwner(u) || ARCHIVE_ALLOWED_IDS.includes(u.id);
+const credits = id => D.credits[id] || 0;
+const addCr = (id, n) => { D.credits[id] = credits(id) + n; save(); };
+const rmCr = (id, n) => { D.credits[id] = Math.max(0, credits(id) - n); save(); };
+const canDaily = id => { const l = D.daily[id] || 0; const m = new Date(); m.setHours(0,0,0,0); return l < m.getTime(); };
+const claimDaily = id => { D.daily[id] = Date.now(); save(); };
+const reg = u => { if (!u?.id || u.bot) return; D.known[u.id] = u.username || u.id; save(); };
+const fmtDur = ms => { const s = Math.floor(ms/1000); if(s<60) return `${s}s`; const m = Math.floor(s/60); if(m<60) return `${m}m`; const h = Math.floor(m/60); return h<24 ? `${h}h ${m%60}m` : `${Math.floor(h/24)}d ${h%24}h`; };
+
+function rememberGuildMember(guildId, user) {
+  if (!guildId || !user?.id || user.bot) return;
+  if (!D.guildMembers[guildId]) D.guildMembers[guildId] = {};
+  D.guildMembers[guildId][user.id] = user.username || user.id;
+  save();
 }
 
-var DF = path.join(__dirname, "data.json");
-var D = { cr: {}, daily: {}, users: [], roles: [], known: {} };
-try { if (fs.existsSync(DF)) { var tmp = JSON.parse(fs.readFileSync(DF, "utf8")); D.cr = tmp.cr || {}; D.daily = tmp.daily || {}; D.users = tmp.users || []; D.roles = tmp.roles || []; D.known = tmp.known || {}; } } catch (e) {}
-
-var saveTimer = null;
-function save() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(function () {
-    saveTimer = null;
-    try { fs.writeFileSync(DF, JSON.stringify(D)); } catch (e) {}
-  }, 500);
+function forgetGuildMember(guildId, userId) {
+  if (!guildId || !userId || !D.guildMembers[guildId]) return;
+  delete D.guildMembers[guildId][userId];
+  save();
 }
 
-function isOwner(u) { return u.username === OWNER_USERNAME || OWNER_IDS.indexOf(u.id) !== -1; }
-function canArch(u) { return isOwner(u) || ARCHIVE_ALLOWED.indexOf(u.id) !== -1; }
-function getCr(id) { return D.cr[id] || 0; }
-function addCr(id, n) { D.cr[id] = getCr(id) + n; save(); }
-function rmCr(id, n) { D.cr[id] = Math.max(0, getCr(id) - n); save(); }
-function canDaily(id) { var l = D.daily[id] || 0; var m = new Date(); m.setHours(0, 0, 0, 0); return l < m.getTime(); }
-function doDaily(id) { D.daily[id] = Date.now(); save(); }
-function reg(u) { if (u && u.id && !u.bot) { D.known[u.id] = u.username || u.id; } }
-
-function fmtDur(ms) {
-  var s = Math.floor(ms / 1000);
-  if (s < 60) return s + "s";
-  var m = Math.floor(s / 60);
-  if (m < 60) return m + "m";
-  var h = Math.floor(m / 60);
-  if (h < 24) return h + "h " + (m % 60) + "m";
-  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+function getAllKnownIdsForGuild(guildId) {
+  const ids = new Set(Object.keys(D.known || {}));
+  if (guildId && D.guildMembers[guildId]) {
+    for (const id of Object.keys(D.guildMembers[guildId])) ids.add(id);
+  }
+  return [...ids];
 }
 
-function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-
-function dl(url) {
-  return axios.get(url, { responseType: "arraybuffer", timeout: 60000 })
-    .then(function (r) { return Buffer.from(r.data); })
-    .catch(function () { return null; });
+async function syncGuildMembers(guild) {
+  if (!guild) return 0;
+  try {
+    if (!D.guildMembers[guild.id]) D.guildMembers[guild.id] = {};
+    let after = "0";
+    while (true) {
+      const url = `https://discord.com/api/v10/guilds/${guild.id}/members?limit=1000&after=${after}`;
+      const res = await axios.get(url, { headers: { Authorization: AUTH }, validateStatus: () => true });
+      if (res.status === 429) {
+        await sleep(((res.data && res.data.retry_after) || 5) * 1000);
+        continue;
+      }
+      if (res.status !== 200 || !Array.isArray(res.data)) throw new Error(`status ${res.status}`);
+      if (!res.data.length) break;
+      for (const member of res.data) {
+        const user = member.user;
+        if (!user || user.bot) continue;
+        D.guildMembers[guild.id][user.id] = user.username || user.id;
+        D.known[user.id] = user.username || user.id;
+        after = user.id;
+      }
+      if (res.data.length < 1000) break;
+      await sleep(250);
+    }
+    save();
+    console.log(`[MEMBERS] Synced ${Object.keys(D.guildMembers[guild.id]).length} members for guild ${guild.id}`);
+    return Object.keys(D.guildMembers[guild.id]).length;
+  } catch (err) {
+    console.error(`[MEMBERS] Sync failed for guild ${guild.id}:`, err.message);
+    return getAllKnownIdsForGuild(guild.id).length;
+  }
 }
 
-var dupMap = new Map();
-function isDup(m) {
-  var now = Date.now();
-  dupMap.forEach(function (t, k) { if (now - t > 8000) dupMap.delete(k); });
-  var s = m.author.id + ":" + m.channelId + ":" + (m.content || "").trim().toLowerCase();
-  if (dupMap.has(s)) return true;
-  dupMap.set(s, now);
+async function dl(url) {
+  for (let i = 0; i < 3; i++) {
+    try { return Buffer.from((await axios.get(url, { responseType: "arraybuffer", timeout: 60000 })).data); } catch {}
+    if (i < 2) await sleep(1000 * (i + 1));
+  }
+  return null;
+}
+
+const sigs = new Map();
+function dup(m) {
+  const now = Date.now();
+  for (const [k, t] of sigs) if (now - t > 8000) sigs.delete(k);
+  const s = `${m.author.id}:${m.channelId}:${m.content?.trim().toLowerCase()}`;
+  if (sigs.has(s)) return true;
+  sigs.set(s, now);
   return false;
 }
 
-function hasRole(msg, uid) {
-  if (!msg.guild || !D.roles.length) return Promise.resolve(false);
-  var member = msg.member;
-  if (member && member.roles && member.roles.cache) {
-    for (var i = 0; i < D.roles.length; i++) {
-      if (member.roles.cache.has(D.roles[i])) return Promise.resolve(true);
-    }
-    return Promise.resolve(false);
-  }
-  return msg.guild.members.fetch(uid).then(function (m) {
-    for (var i = 0; i < D.roles.length; i++) {
-      if (m.roles.cache.has(D.roles[i])) return true;
-    }
-    return false;
-  }).catch(function () { return false; });
+// ================= ROLES =================
+async function hasRole(msg, uid) {
+  if (!msg.guild || !D.roles.length) return false;
+  try {
+    const m = msg.member || await msg.guild.members.fetch(uid);
+    return D.roles.some(r => m.roles.cache.has(r));
+  } catch { return false; }
 }
 
-function fullAccess(msg) {
-  if (isOwner(msg.author)) return Promise.resolve(true);
-  if (D.users.indexOf(msg.author.id) !== -1) return Promise.resolve(true);
+async function fullAccess(msg) {
+  if (isOwner(msg.author)) return true;
+  if (D.users.includes(msg.author.id)) return true;
   return hasRole(msg, msg.author.id);
 }
 
-function findRole(guild, input) {
-  if (!guild) return Promise.resolve(null);
-  return guild.roles.fetch().then(function () {
-    var m = input.match(/^<@&(\d+)>$/);
-    if (m) { var r = guild.roles.cache.get(m[1]); if (r) return r; }
-    m = input.match(/^(\d+)$/);
-    if (m) { var r2 = guild.roles.cache.get(m[1]); if (r2) return r2; }
-    var clean = input.replace(/^@/, "").toLowerCase();
-    var r3 = guild.roles.cache.find(function (r) { return r.name.toLowerCase() === clean; });
-    if (r3) return r3;
-    var r4 = guild.roles.cache.find(function (r) { return r.name.toLowerCase().indexOf(clean) !== -1; });
-    return r4 || null;
-  }).catch(function () { return null; });
+async function findRole(guild, input) {
+  if (!guild) return null;
+  try { await guild.roles.fetch(); } catch {}
+  let m = input.match(/^<@&(\d+)>$/);
+  if (m) return guild.roles.cache.get(m[1]) || null;
+  m = input.match(/^(\d+)$/);
+  if (m) return guild.roles.cache.get(m[1]) || null;
+  const clean = input.replace(/^@/, "").toLowerCase();
+  return guild.roles.cache.find(r => r.name.toLowerCase() === clean) ||
+         guild.roles.cache.find(r => r.name.toLowerCase().includes(clean)) || null;
 }
 
-var TXT_RE = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
-
+// ================= TXT =================
+const TXT_RE = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
 function extractTxt(raw) {
-  var files = [], seen = {};
-  function add(url, name) {
-    if (!url || seen[url]) return;
-    seen[url] = true;
-    if (!name) try { name = new URL(url).pathname.split("/").pop(); } catch (e) { name = "f.txt"; }
-    if (!name || name.toLowerCase().indexOf(".txt", name.length - 4) === -1) return;
-    files.push({ url: url, name: name });
+  const f = [], s = new Set();
+  function a(u, n) {
+    if (!u || s.has(u)) return; s.add(u);
+    if (!n) try { n = new URL(u).pathname.split("/").pop(); } catch { n = "f.txt"; }
+    if (!n?.toLowerCase().endsWith(".txt")) return;
+    f.push({ url: u, name: n });
   }
-  var atts = raw.attachments || [];
-  for (var i = 0; i < atts.length; i++) {
-    if (atts[i].filename && atts[i].filename.toLowerCase().endsWith(".txt")) add(atts[i].url, atts[i].filename);
+  for (const att of raw.attachments || []) if (att.filename?.toLowerCase().endsWith(".txt")) a(att.url, att.filename);
+  if (raw.content) { const m = String(raw.content).match(TXT_RE); if (m) m.forEach(u => a(u)); }
+  for (const e of raw.embeds || []) if (e.description) { const m = String(e.description).match(TXT_RE); if (m) m.forEach(u => a(u)); }
+  if (Array.isArray(raw.message_snapshots)) for (const snap of raw.message_snapshots) {
+    const sm = snap.message || snap;
+    for (const att of sm.attachments || []) if (att.filename?.toLowerCase().endsWith(".txt")) a(att.url, att.filename);
+    if (sm.content) { const m = String(sm.content).match(TXT_RE); if (m) m.forEach(u => a(u)); }
   }
-  if (raw.content) { var m = String(raw.content).match(TXT_RE); if (m) for (var j = 0; j < m.length; j++) add(m[j]); }
-  var embs = raw.embeds || [];
-  for (var k = 0; k < embs.length; k++) { if (embs[k].description) { var m2 = String(embs[k].description).match(TXT_RE); if (m2) for (var l = 0; l < m2.length; l++) add(m2[l]); } }
-  if (raw.message_snapshots) {
-    for (var s = 0; s < raw.message_snapshots.length; s++) {
-      var sm = raw.message_snapshots[s].message || raw.message_snapshots[s];
-      var sa = sm.attachments || [];
-      for (var si = 0; si < sa.length; si++) { if (sa[si].filename && sa[si].filename.toLowerCase().endsWith(".txt")) add(sa[si].url, sa[si].filename); }
-      if (sm.content) { var sm2 = String(sm.content).match(TXT_RE); if (sm2) for (var sl = 0; sl < sm2.length; sl++) add(sm2[sl]); }
-    }
-  }
-  return files;
+  return f;
 }
 
-function fetchMsgs(ch, before) {
-  var url = "https://discord.com/api/v10/channels/" + ch + "/messages?limit=100";
-  if (before) url += "&before=" + before;
-  return axios.get(url, { headers: { Authorization: AUTH }, validateStatus: function () { return true; } })
-    .then(function (r) {
-      if (r.status === 429) {
-        var w = ((r.data && r.data.retry_after) || 5) * 1000;
-        return sleep(w).then(function () { return fetchMsgs(ch, before); });
-      }
-      if (r.status !== 200) return [];
-      return Array.isArray(r.data) ? r.data : [];
-    })
-    .catch(function () { return []; });
+async function fetchMsgs(chId, before) {
+  let url = `https://discord.com/api/v10/channels/${chId}/messages?limit=100`;
+  if (before) url += `&before=${before}`;
+  try {
+    const r = await axios.get(url, { headers: { Authorization: RAW }, validateStatus: () => true });
+    if (r.status === 429) { await sleep((r.data?.retry_after || 5) * 1000); return fetchMsgs(chId, before); }
+    return r.status === 200 && Array.isArray(r.data) ? r.data : [];
+  } catch { return []; }
 }
 
-var fileCache = [];
-var cacheUrls = {};
+// ================= CACHE =================
+let fileCache = [];
+let cacheUrls = new Set();
 
 function addToCache(files) {
-  var n = 0;
-  for (var i = 0; i < files.length; i++) {
-    if (!cacheUrls[files[i].url]) {
-      cacheUrls[files[i].url] = true;
-      fileCache.unshift(files[i]);
-      n++;
-    }
-  }
+  let n = 0;
+  for (const f of files) if (!cacheUrls.has(f.url)) { cacheUrls.add(f.url); fileCache.unshift(f); n++; }
+  if (n) console.log(`[CACHE] +${n} → ${fileCache.length} total`);
   return n;
 }
 
-function scanChannel(ch) {
-  var all = [], urls = {}, last = null;
-  function next() {
-    return fetchMsgs(ch, last).then(function (msgs) {
-      if (!msgs.length) return all;
-      for (var i = 0; i < msgs.length; i++) {
-        var ff = extractTxt(msgs[i]);
-        for (var j = 0; j < ff.length; j++) {
-          if (!urls[ff[j].url]) { urls[ff[j].url] = true; all.push(ff[j]); }
-        }
-      }
-      last = msgs[msgs.length - 1].id;
-      if (msgs.length < 100) return all;
-      return sleep(300).then(next);
-    });
+async function scanChannel(chId) {
+  const all = [], urls = new Set();
+  let last, batches = 0;
+  while (true) {
+    const msgs = await fetchMsgs(chId, last);
+    if (!msgs.length) break;
+    batches++;
+    for (const m of msgs) for (const f of extractTxt(m)) if (!urls.has(f.url)) { urls.add(f.url); all.push(f); }
+    last = msgs[msgs.length - 1].id;
+    if (msgs.length < 100) break;
+    await sleep(300);
   }
-  return next();
+  console.log(`[SCAN] ${chId}: ${all.length} files, ${batches} batches`);
+  return all;
 }
 
-var bot = new Client({
+// ================= UPLOAD =================
+async function uploadZip(opts) {
+  if (!ARCHIVE_UPLOAD_URL) return null;
+  try {
+    const r = await axios.post(ARCHIVE_UPLOAD_URL, { ...opts, zipBase64: opts.zipBuffer.toString("base64") },
+      { timeout: 120000, headers: ARCHIVE_UPLOAD_SECRET ? { "x-archive-secret": ARCHIVE_UPLOAD_SECRET } : {}, validateStatus: () => true });
+    return r.status >= 200 && r.status < 300 && r.data?.url ? r.data : null;
+  } catch { return null; }
+}
+
+// ================= BOT =================
+const bot = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
   partials: [Partials.Message, Partials.Channel]
 });
 
-var searches = {};
-var BAR = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+const searches = new Map();
+const bar = "━".repeat(28);
+const content_ = (n, q, i, t) => [bar, `📄 **${n}**`, `🔎 \`${q}\` · **${i+1}/${t}**`, bar].join("\n");
+const row_ = (i, t) => new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId("p").setEmoji("⬅️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1),
+  new ButtonBuilder().setCustomId("c").setLabel(`${i+1}/${t}`).setStyle(ButtonStyle.Primary).setDisabled(true),
+  new ButtonBuilder().setCustomId("n").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1)
+);
 
-function makeRow(i, t) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("prev").setEmoji("⬅️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1),
-    new ButtonBuilder().setCustomId("pg").setLabel((i + 1) + "/" + t).setStyle(ButtonStyle.Primary).setDisabled(true),
-    new ButtonBuilder().setCustomId("next").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1)
-  );
+// BUTTONS
+bot.on("interactionCreate", async i => {
+  if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
+  const s = searches.get(i.message.id);
+  if (!s) return i.reply({ content: "❌ Expired.", ephemeral: true });
+  if (i.user.id !== s.uid) return i.reply({ content: "❌ Not yours.", ephemeral: true });
+  if (!s.full) return i.reply({ content: "❌ Get the allowed role for prev/next.", ephemeral: true });
+  await i.deferUpdate();
+  s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
+  const f = s.m[s.idx], d = await dl(f.url);
+  if (!d) return i.followUp({ content: "❌ Download failed.", ephemeral: true });
+  await i.editReply({ content: content_(f.name, s.q, s.idx, s.m.length), files: [{ attachment: d, name: f.name }], components: [row_(s.idx, s.m.length)] });
+});
+
+// AUTO-ADD new files
+bot.on("messageCreate", async msg => {
+  if (!msg.author.bot) {
+    const nf = [];
+    for (const a of msg.attachments.values()) if (a.name?.toLowerCase().endsWith(".txt")) nf.push({ url: a.url, name: a.name });
+    if (nf.length) addToCache(nf);
+  }
+
+  if (msg.author.bot || msg.author.id === bot.user?.id) return;
+  const c = msg.content?.trim() || "";
+  if (!c.startsWith("!") || dup(msg)) return;
+  reg(msg.author);
+  if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
+
+  const args = c.slice(1).trim().split(/\s+/);
+  const cmd = args.shift()?.toLowerCase();
+  const uid = msg.author.id;
+
+  try {
+
+// ========== HELP ==========
+if (cmd === "help") return msg.channel.send([
+  "**📖 Commands:**",
+  "`!xlsqr <query>` — Search files",
+  "`!claimdaily` — 1 free credit",
+  "`!balance` — Credits",
+  "`!access` — Access level",
+  "",
+  "**👑 Owner:**",
+  "`!download` — Download .txt from this channel",
+  "`!download <id>` — Download from channel id",
+  "`!sources` — Count files in source channels",
+  "`!givecredit @user/all [n]`",
+  "`!removecredit @user/all [n]`",
+  "`!giveperms @user/@role/RoleName`",
+  "`!removeperms @user/@role/RoleName`",
+  "`!perms` — View perms",
+  "`!extract` — Reply to search or zip (extracts .txt + .html)",
+  "`!eggisgay` — Reply to zip (extracts .txt)",
+  "`!070112 <id>` / `!07012 <id>`",
+  "`!reload`",
+  "",
+  `**Cache:** ${fileCache.length} files`
+].join("\n"));
+
+// ========== CLAIMDAILY ==========
+if (cmd === "claimdaily") {
+  if (!canDaily(uid)) {
+    const t = new Date(); t.setDate(t.getDate()+1); t.setHours(0,0,0,0);
+    return msg.channel.send(`⏰ Next in **${fmtDur(t.getTime() - Date.now())}**`);
+  }
+  addCr(uid, 1); claimDaily(uid);
+  return msg.channel.send(`✅ +1 credit 🪙 Balance: **${credits(uid)}**`);
 }
 
-bot.on("interactionCreate", function (inter) {
-  if (!inter.isButton()) return;
-  if (inter.customId !== "prev" && inter.customId !== "next") return;
-  var s = searches[inter.message.id];
-  if (!s) return inter.reply({ content: "❌ Expired.", ephemeral: true });
-  if (inter.user.id !== s.uid) return inter.reply({ content: "❌ Not yours.", ephemeral: true });
-  if (!s.full) return inter.reply({ content: "❌ Get the allowed role for prev/next.", ephemeral: true });
-  inter.deferUpdate().then(function () {
-    s.idx = inter.customId === "next" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
-    var f = s.m[s.idx];
-    return dl(f.url).then(function (d) {
-      if (!d) return inter.followUp({ content: "❌ Download failed.", ephemeral: true });
-      return inter.editReply({
-        content: BAR + "\n📄 **" + f.name + "**\n🔎 `" + s.q + "` · **" + (s.idx + 1) + "/" + s.m.length + "**\n" + BAR,
-        files: [{ attachment: d, name: f.name }],
-        components: [makeRow(s.idx, s.m.length)]
-      });
-    });
-  }).catch(function () {});
+// ========== BALANCE ==========
+if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credits(uid)}** credits 🪙`);
+
+// ========== ACCESS ==========
+if (cmd === "access") {
+  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — unlimited");
+  if (D.users.includes(uid)) return msg.channel.send("✅ **Allowed user** — unlimited");
+  if (await hasRole(msg, uid)) return msg.channel.send("🔑 **Allowed role** — unlimited");
+  return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 file, no prev/next.`);
+}
+
+// ========== XLSQR ==========
+if (cmd === "xlsqr") {
+  const q = args.join(" ").trim().toLowerCase();
+  if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
+  if (!fileCache.length) return msg.channel.send("❌ Cache empty. Owner: `!download` first.");
+  const full = await fullAccess(msg);
+  if (!full && credits(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
+  const qw = q.split(/\s+/);
+  const matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
+  if (!matches.length) return msg.channel.send(`❌ Nothing for **"${q}"**.`);
+  if (!full) rmCr(uid, 1);
+  const f = matches[0], d = await dl(f.url);
+  if (!d) { if (!full) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded."); }
+  if (!full) return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · Balance: **${credits(uid)}**\n🔒 Get allowed role for prev/next\n${bar}`, files: [{ attachment: d, name: f.name }] });
+  const sent = await msg.channel.send({ content: content_(f.name, q, 0, matches.length), files: [{ attachment: d, name: f.name }], components: matches.length > 1 ? [row_(0, matches.length)] : [] });
+  if (matches.length > 1) searches.set(sent.id, { m: matches, idx: 0, q, uid, full: true });
+  return;
+}
+
+// ========== ARCHIVE ==========
+if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
+
+// ========== OWNER ONLY ==========
+if (!isOwner(msg.author)) return;
+
+// ========== DOWNLOAD ==========
+if (cmd === "download") {
+  const ch = args[0] || msg.channelId;
+  const st = await msg.channel.send(`⏳ Downloading .txt from \`${ch}\`...`);
+  const files = await scanChannel(ch);
+  if (!files.length) return st.edit(`❌ No .txt in \`${ch}\`.`);
+  const added = addToCache(files);
+  return st.edit(`✅ Found **${files.length}** · New: **${added}** · Total: **${fileCache.length}**\nUse \`!xlsqr <query>\` to search.`);
+}
+
+// ========== SOURCES ==========
+if (cmd === "sources") {
+  const st = await msg.channel.send("⏳ Counting...");
+  const results = [];
+  for (const ch of SOURCE_CHANNELS) {
+    const files = await scanChannel(ch);
+    results.push({ ch, count: files.length });
+  }
+  return st.edit(["**📚 Sources:**", ...results.map(r => `• \`${r.ch}\` → **${r.count}** .txt files`), "", `**Cache:** ${fileCache.length} files`].join("\n"));
+}
+
+// ========== GIVECREDIT ==========
+if (cmd === "givecredit" || cmd === "givecredits") {
+  const t = args[0], n = parseInt(args[1]) || 1;
+  if (!t) return msg.channel.send("❌ `!givecredit @user [n]` / `!givecredit all [n]`");
+  if (t.toLowerCase() === "all") {
+    if (!msg.guild) return msg.channel.send("❌ Use this command in a server.");
+    const status = await msg.channel.send("⏳ Syncing members and giving credits to everyone...");
+    await syncGuildMembers(msg.guild);
+    const ids = getAllKnownIdsForGuild(msg.guild.id);
+    if (!ids.length) return status.edit("❌ No members found.");
+    for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n;
+    save();
+    return status.edit(`✅ Gave **${n}** credit${n !== 1 ? "s" : ""} to **${ids.length}** users in this server.`);
+  }
+  const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
+  if (!m) return msg.channel.send("❌ `!givecredit @user [n]` / `!givecredit all [n]`");
+  addCr(m[1], n);
+  return msg.channel.send(`✅ +**${n}** to <@${m[1]}>. Balance: **${credits(m[1])}**`);
+}
+
+// ========== REMOVECREDIT ==========
+if (cmd === "removecredit" || cmd === "removecredits") {
+  const t = args[0], n = parseInt(args[1]) || 1;
+  if (!t) return msg.channel.send("❌ `!removecredit @user [n]` / `!removecredit all [n]`");
+  if (t.toLowerCase() === "all") {
+    if (!msg.guild) return msg.channel.send("❌ Use this command in a server.");
+    const status = await msg.channel.send("⏳ Syncing members and removing credits from everyone...");
+    await syncGuildMembers(msg.guild);
+    const ids = getAllKnownIdsForGuild(msg.guild.id);
+    if (!ids.length) return status.edit("❌ No members found.");
+    for (const id of ids) D.credits[id] = Math.max(0, (D.credits[id] || 0) - n);
+    save();
+    return status.edit(`✅ Removed **${n}** credit${n !== 1 ? "s" : ""} from **${ids.length}** users in this server.`);
+  }
+  const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
+  if (!m) return msg.channel.send("❌ `!removecredit @user [n]` / `!removecredit all [n]`");
+  rmCr(m[1], n);
+  return msg.channel.send(`✅ -**${n}** from <@${m[1]}>. Balance: **${credits(m[1])}**`);
+}
+
+// ========== GIVEPERMS ==========
+if (cmd === "giveperms") {
+  const input = args.join(" ").trim();
+  if (!input) return msg.channel.send("❌ `!giveperms @user` / `!giveperms @role` / `!giveperms RoleName`");
+
+  // role mention <@&ID>
+  const rm = input.match(/^<@&(\d+)>$/);
+  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role <@&${rm[1]}> → unlimited.`); }
+
+  // search by name or ID in guild
+  if (msg.guild) {
+    const role = await findRole(msg.guild, input);
+    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** (\`${role.id}\`) → unlimited.`); }
+  }
+
+  // user mention
+  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User <@${um[1]}> → unlimited.`); }
+
+  return msg.channel.send(`❌ Not found: \`${input}\``);
+}
+
+// ========== REMOVEPERMS ==========
+if (cmd === "removeperms") {
+  const input = args.join(" ").trim();
+  if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ All perms removed."); }
+
+  const rm = input.match(/^<@&(\d+)>$/);
+  if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send(`✅ Removed role <@&${rm[1]}>.`); }
+
+  if (msg.guild) {
+    const role = await findRole(msg.guild, input);
+    if (role) { D.roles = D.roles.filter(id => id !== role.id); save(); return msg.channel.send(`✅ Removed role **${role.name}**.`); }
+  }
+
+  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/);
+  if (um) { D.users = D.users.filter(id => id !== um[1]); D.roles = D.roles.filter(id => id !== um[1]); save(); return msg.channel.send(`✅ Removed \`${um[1]}\`.`); }
+
+  return msg.channel.send("❌ `!removeperms @user/@role/RoleName` or `!removeperms` (all)");
+}
+
+// ========== PERMS ==========
+if (cmd === "perms") {
+  const lines = ["**📋 Permissions:**", "", "**Roles:**"];
+  if (!D.roles.length) lines.push("None");
+  else for (const id of D.roles) {
+    let n = id;
+    if (msg.guild) try { const r = msg.guild.roles.cache.get(id); if (r) n = `${r.name} (${id})`; } catch {}
+    lines.push(`• <@&${id}> — ${n}`);
+  }
+  lines.push("", "**Users:**");
+  if (!D.users.length) lines.push("None");
+  else for (const id of D.users) lines.push(`• <@${id}>`);
+  return msg.channel.send(lines.join("\n"));
+}
+
+// ========== RELOAD ==========
+if (cmd === "reload") {
+  const st = await msg.channel.send("🔄 Reloading...");
+  fileCache = []; cacheUrls = new Set();
+  for (const ch of SOURCE_CHANNELS) {
+    const files = await scanChannel(ch);
+    addToCache(files);
+  }
+  return st.edit(`✅ Loaded **${fileCache.length}** files from ${SOURCE_CHANNELS.length} channels.`);
+}
+
+// ========== EXTRACT ==========
+if (cmd === "extract") {
+  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a `!xlsqr` result OR a .zip file.");
+
+  // check if it's a search result
+  const search = searches.get(msg.reference.messageId);
+  if (search) {
+    await msg.channel.send(`📦 Extracting **${search.m.length}** files...`);
+    let sent = 0;
+    for (let i = 0; i < search.m.length; i += 10) {
+      const batch = search.m.slice(i, i + 10), files = [];
+      for (const f of batch) { const d = await dl(f.url); if (d) { files.push({ attachment: d, name: f.name }); sent++; } }
+      if (files.length) await msg.channel.send({ files });
+      if (i + 10 < search.m.length) await sleep(1500);
+    }
+    return msg.channel.send(`✅ Sent **${sent}** files.`);
+  }
+
+  // otherwise try zip
+  const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
+  if (!ref) return msg.channel.send("❌ Message not found.");
+
+  let zipUrl = null;
+  for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; }
+  if (!zipUrl) return msg.channel.send("❌ Reply to a `!xlsqr` result OR a message with a .zip file.");
+
+  const zd = await dl(zipUrl);
+  if (!zd) return msg.channel.send("❌ Download failed.");
+
+  const zip = new AdmZip(zd);
+  const extracted = [];
+  for (const e of zip.getEntries()) {
+    if (e.isDirectory) continue;
+    const low = e.entryName.toLowerCase();
+    if (low.endsWith(".txt") || low.endsWith(".html") || low.endsWith(".htm")) {
+      extracted.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+    }
+  }
+
+  if (!extracted.length) return msg.channel.send("❌ No .txt/.html files in zip.");
+
+  await msg.channel.send(`📦 Extracting **${extracted.length}** .txt/.html files...`);
+  let sent = 0;
+  for (let i = 0; i < extracted.length; i += 10) {
+    const batch = extracted.slice(i, i + 10);
+    await msg.channel.send({ files: batch.map(f => ({ attachment: f.data, name: f.name })) });
+    sent += batch.length;
+    if (i + 10 < extracted.length) await sleep(1000);
+  }
+  return msg.channel.send(`✅ Sent **${sent}** files.`);
+}
+
+// ========== EGGISGAY ==========
+if (cmd === "eggisgay") {
+  if (!msg.reference?.messageId) return;
+  const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
+  if (!ref) return;
+  let zu = null;
+  for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zu = a.url; break; }
+  if (!zu) return;
+  const zd = await dl(zu); if (!zd) return;
+  const z = new AdmZip(zd), tf = [];
+  for (const e of z.getEntries()) if (!e.isDirectory && e.entryName.toLowerCase().endsWith(".txt")) tf.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+  for (let i = 0; i < tf.length; i += 10) {
+    await msg.channel.send({ files: tf.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) });
+    if (i + 10 < tf.length) await sleep(1000);
+  }
+  return;
+}
+
+  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ ${err?.message || "Error"}`); } catch {} }
 });
 
-bot.on("messageCreate", function (msg) {
-  // auto-add new txt from any channel
-  if (!msg.author.bot) {
-    var nf = [];
-    msg.attachments.forEach(function (a) {
-      if (a.name && a.name.toLowerCase().endsWith(".txt")) nf.push({ url: a.url, name: a.name });
-    });
-    if (nf.length) {
-      var added = addToCache(nf);
-      if (added) console.log("[AUTO] +" + added + " total:" + fileCache.length);
-    }
-  }
-
-  if (msg.author.bot || msg.author.id === (bot.user && bot.user.id)) return;
-  var content = (msg.content || "").trim();
-  if (content.charAt(0) !== "!" || isDup(msg)) return;
-  reg(msg.author);
-
-  var parts = content.slice(1).trim().split(/\s+/);
-  var cmd = parts.shift().toLowerCase();
-  var uid = msg.author.id;
-
-  // HELP
-  if (cmd === "help") {
-    return msg.channel.send(
-      "**📖 Commands:**\n" +
-      "`!xlsqr <query>` — Search\n" +
-      "`!claimdaily` — 1 free credit\n" +
-      "`!balance` — Credits\n" +
-      "`!access` — Access level\n\n" +
-      "**👑 Owner:**\n" +
-      "`!download` — Load .txt from this channel\n" +
-      "`!download <channel_id>`\n" +
-      "`!sources` — Count files in source channels\n" +
-      "`!givecredit @user/all [n]`\n" +
-      "`!removecredit @user/all [n]`\n" +
-      "`!giveperms @user/@role/RoleName`\n" +
-      "`!removeperms @user/@role/RoleName`\n" +
-      "`!perms`\n" +
-      "`!extract` — Reply to search result or zip (.txt+.html)\n" +
-      "`!eggisgay` — Reply to zip (.txt only)\n" +
-      "`!070112 <id>` / `!07012 <id>`\n" +
-      "`!reload`\n\n" +
-      "**Cache:** " + fileCache.length + " files"
-    );
-  }
-
-  // CLAIMDAILY
-  if (cmd === "claimdaily") {
-    if (!canDaily(uid)) {
-      var t = new Date(); t.setDate(t.getDate() + 1); t.setHours(0, 0, 0, 0);
-      return msg.channel.send("⏰ Next in **" + fmtDur(t.getTime() - Date.now()) + "**");
-    }
-    addCr(uid, 1); doDaily(uid);
-    return msg.channel.send("✅ +1 credit 🪙 Balance: **" + getCr(uid) + "**");
-  }
-
-  // BALANCE
-  if (cmd === "balance" || cmd === "bal") {
-    return msg.channel.send("💰 **" + getCr(uid) + "** credits 🪙");
-  }
-
-  // ACCESS
-  if (cmd === "access") {
-    if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — unlimited");
-    if (D.users.indexOf(uid) !== -1) return msg.channel.send("✅ **Allowed user** — unlimited");
-    return hasRole(msg, uid).then(function (ok) {
-      if (ok) return msg.channel.send("🔑 **Allowed role** — unlimited");
-      return msg.channel.send("🪙 **" + getCr(uid) + "** credits. 1 credit = 1 file, no prev/next.");
-    });
-  }
-
-  // XLSQR
-  if (cmd === "xlsqr") {
-    var q = parts.join(" ").trim().toLowerCase();
-    if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
-    if (!fileCache.length) return msg.channel.send("❌ Cache empty. Owner: `!download` first.");
-    return fullAccess(msg).then(function (full) {
-      if (!full && getCr(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
-      var qw = q.split(/\s+/);
-      var matches = fileCache.filter(function (f) {
-        var low = f.name.toLowerCase();
-        return qw.every(function (w) { return low.indexOf(w) !== -1; });
-      });
-      if (!matches.length) return msg.channel.send('❌ Nothing for **"' + q + '"**.');
-      if (!full) rmCr(uid, 1);
-      var f = matches[0];
-      return dl(f.url).then(function (d) {
-        if (!d) { if (!full) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded."); }
-        if (!full) {
-          return msg.channel.send({
-            content: BAR + "\n📄 **" + f.name + "**\n🔎 `" + q + "` · **" + matches.length + "** results\n🪙 1 used · Balance: **" + getCr(uid) + "**\n🔒 Get allowed role for prev/next\n" + BAR,
-            files: [{ attachment: d, name: f.name }]
-          });
-        }
-        return msg.channel.send({
-          content: BAR + "\n📄 **" + f.name + "**\n🔎 `" + q + "` · **1/" + matches.length + "**\n" + BAR,
-          files: [{ attachment: d, name: f.name }],
-          components: matches.length > 1 ? [makeRow(0, matches.length)] : []
-        }).then(function (sent) {
-          if (matches.length > 1) searches[sent.id] = { m: matches, idx: 0, q: q, uid: uid, full: true };
-        });
-      });
-    });
-  }
-
-  // ARCHIVE
-  if ((cmd === "070112" || cmd === "07012") && canArch(msg.author)) {
-    return doArchive(msg, parts[0]);
-  }
-
-  // OWNER ONLY
-  if (!isOwner(msg.author)) return;
-
-  // DOWNLOAD
-  if (cmd === "download") {
-    var ch = parts[0] || msg.channelId;
-    return msg.channel.send("⏳ Downloading .txt from `" + ch + "`...").then(function (st) {
-      return scanChannel(ch).then(function (files) {
-        if (!files.length) return st.edit("❌ No .txt in `" + ch + "`.");
-        var added = addToCache(files);
-        return st.edit("✅ Found **" + files.length + "** · New: **" + added + "** · Total: **" + fileCache.length + "**\nUse `!xlsqr <query>` to search.");
-      });
-    });
-  }
-
-  // SOURCES
-  if (cmd === "sources") {
-    return msg.channel.send("⏳ Counting...").then(function (st) {
-      var results = [];
-      function doNext(i) {
-        if (i >= SRC_CHANNELS.length) {
-          var lines = ["**📚 Sources:**"];
-          for (var j = 0; j < results.length; j++) lines.push("• `" + results[j].ch + "` → **" + results[j].n + "** .txt files");
-          lines.push("", "**Cache:** " + fileCache.length + " files");
-          return st.edit(lines.join("\n"));
-        }
-        return scanChannel(SRC_CHANNELS[i]).then(function (files) {
-          results.push({ ch: SRC_CHANNELS[i], n: files.length });
-          return doNext(i + 1);
-        });
-      }
-      return doNext(0);
-    });
-  }
-
-  // GIVECREDIT
-  if (cmd === "givecredit" || cmd === "givecredits") {
-    var target = parts[0], amount = parseInt(parts[1]) || 1;
-    if (!target) return msg.channel.send("❌ `!givecredit @user [n]` / `!givecredit all [n]`");
-    if (target.toLowerCase() === "all") {
-      var ids = Object.keys(D.known);
-      if (!ids.length) return msg.channel.send("❌ No known users yet.");
-      for (var i = 0; i < ids.length; i++) D.cr[ids[i]] = (D.cr[ids[i]] || 0) + amount;
-      save();
-      return msg.channel.send("✅ +**" + amount + "** to **" + ids.length + "** users.");
-    }
-    var m = target.match(/<@!?(\d+)>/) || target.match(/^(\d+)$/);
-    if (!m) return msg.channel.send("❌ `!givecredit @user [n]` / `!givecredit all [n]`");
-    addCr(m[1], amount);
-    return msg.channel.send("✅ +**" + amount + "** to <@" + m[1] + ">. Balance: **" + getCr(m[1]) + "**");
-  }
-
-  // REMOVECREDIT
-  if (cmd === "removecredit" || cmd === "removecredits") {
-    var target2 = parts[0], amount2 = parseInt(parts[1]) || 1;
-    if (!target2) return msg.channel.send("❌ `!removecredit @user [n]` / `!removecredit all [n]`");
-    if (target2.toLowerCase() === "all") {
-      var ids2 = Object.keys(D.known);
-      if (!ids2.length) return msg.channel.send("❌ No known users.");
-      for (var i2 = 0; i2 < ids2.length; i2++) D.cr[ids2[i2]] = Math.max(0, (D.cr[ids2[i2]] || 0) - amount2);
-      save();
-      return msg.channel.send("✅ -**" + amount2 + "** from **" + ids2.length + "** users.");
-    }
-    var m2 = target2.match(/<@!?(\d+)>/) || target2.match(/^(\d+)$/);
-    if (!m2) return msg.channel.send("❌ `!removecredit @user [n]` / `!removecredit all [n]`");
-    rmCr(m2[1], amount2);
-    return msg.channel.send("✅ -**" + amount2 + "** from <@" + m2[1] + ">. Balance: **" + getCr(m2[1]) + "**");
-  }
-
-  // GIVEPERMS
-  if (cmd === "giveperms") {
-    var input = parts.join(" ").trim();
-    if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`");
-    var rm = input.match(/^<@&(\d+)>$/);
-    if (rm) { if (D.roles.indexOf(rm[1]) === -1) D.roles.push(rm[1]); save(); return msg.channel.send("✅ Role <@&" + rm[1] + "> → unlimited."); }
-    if (msg.guild) {
-      return findRole(msg.guild, input).then(function (role) {
-        if (role) { if (D.roles.indexOf(role.id) === -1) D.roles.push(role.id); save(); return msg.channel.send("✅ Role **" + role.name + "** (`" + role.id + "`) → unlimited."); }
-        var um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-        if (um) { if (D.users.indexOf(um[1]) === -1) D.users.push(um[1]); save(); return msg.channel.send("✅ User <@" + um[1] + "> → unlimited."); }
-        return msg.channel.send("❌ Not found: `" + input + "`");
-      });
-    }
-    var um2 = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-    if (um2) { if (D.users.indexOf(um2[1]) === -1) D.users.push(um2[1]); save(); return msg.channel.send("✅ User <@" + um2[1] + "> → unlimited."); }
-    return msg.channel.send("❌ Not found: `" + input + "`");
-  }
-
-  // REMOVEPERMS
-  if (cmd === "removeperms") {
-    var inp = parts.join(" ").trim();
-    if (!inp) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ All perms removed."); }
-    var rm2 = inp.match(/^<@&(\d+)>$/);
-    if (rm2) { D.roles = D.roles.filter(function (id) { return id !== rm2[1]; }); save(); return msg.channel.send("✅ Removed role."); }
-    if (msg.guild) {
-      return findRole(msg.guild, inp).then(function (role) {
-        if (role) { D.roles = D.roles.filter(function (id) { return id !== role.id; }); save(); return msg.channel.send("✅ Removed role **" + role.name + "**."); }
-        var um = inp.match(/^<@!?(\d+)>$/) || inp.match(/^(\d+)$/);
-        if (um) { D.users = D.users.filter(function (id) { return id !== um[1]; }); D.roles = D.roles.filter(function (id) { return id !== um[1]; }); save(); return msg.channel.send("✅ Removed."); }
-        return msg.channel.send("❌ Not found.");
-      });
-    }
-    var um3 = inp.match(/^<@!?(\d+)>$/) || inp.match(/^(\d+)$/);
-    if (um3) { D.users = D.users.filter(function (id) { return id !== um3[1]; }); D.roles = D.roles.filter(function (id) { return id !== um3[1]; }); save(); return msg.channel.send("✅ Removed."); }
-    return msg.channel.send("❌ Not found.");
-  }
-
-  // PERMS
-  if (cmd === "perms") {
-    var lines = ["**📋 Permissions:**", "", "**Roles:**"];
-    if (!D.roles.length) lines.push("None");
-    else for (var pi = 0; pi < D.roles.length; pi++) {
-      var rn = D.roles[pi];
-      if (msg.guild) try { var rr = msg.guild.roles.cache.get(D.roles[pi]); if (rr) rn = rr.name + " (" + D.roles[pi] + ")"; } catch (e) {}
-      lines.push("• <@&" + D.roles[pi] + "> — " + rn);
-    }
-    lines.push("", "**Users:**");
-    if (!D.users.length) lines.push("None");
-    else for (var ui = 0; ui < D.users.length; ui++) lines.push("• <@" + D.users[ui] + ">");
-    return msg.channel.send(lines.join("\n"));
-  }
-
-  // RELOAD
-  if (cmd === "reload") {
-    return msg.channel.send("🔄 Reloading...").then(function (st) {
-      fileCache = []; cacheUrls = {};
-      function doNext(i) {
-        if (i >= SRC_CHANNELS.length) return st.edit("✅ Loaded **" + fileCache.length + "** files from " + SRC_CHANNELS.length + " channels.");
-        return scanChannel(SRC_CHANNELS[i]).then(function (files) { addToCache(files); return doNext(i + 1); });
-      }
-      return doNext(0);
-    });
-  }
-
-  // EXTRACT
-  if (cmd === "extract") {
-    if (!msg.reference || !msg.reference.messageId) return msg.channel.send("❌ Reply to a `!xlsqr` result or a .zip file.");
-
-    var search = searches[msg.reference.messageId];
-    if (search) {
-      return msg.channel.send("📦 Extracting **" + search.m.length + "** files...").then(function () {
-        var sent = 0, i = 0;
-        function batch() {
-          if (i >= search.m.length) return msg.channel.send("✅ Sent **" + sent + "** files.");
-          var b = search.m.slice(i, i + 10);
-          i += 10;
-          return Promise.all(b.map(function (f) { return dl(f.url).then(function (d) { return d ? { attachment: d, name: f.name } : null; }); }))
-            .then(function (files) {
-              files = files.filter(Boolean);
-              sent += files.length;
-              if (files.length) return msg.channel.send({ files: files });
-            })
-            .then(function () { return sleep(1500); })
-            .then(batch);
-        }
-        return batch();
-      });
-    }
-
-    return msg.channel.messages.fetch(msg.reference.messageId).then(function (ref) {
-      var zipUrl = null;
-      ref.attachments.forEach(function (a) { if (a.name && a.name.toLowerCase().endsWith(".zip") && !zipUrl) zipUrl = a.url; });
-      if (!zipUrl) return msg.channel.send("❌ Reply to a `!xlsqr` result or a .zip file.");
-      return dl(zipUrl).then(function (zd) {
-        if (!zd) return msg.channel.send("❌ Download failed.");
-        var zip = new AdmZip(zd);
-        var extracted = [];
-        zip.getEntries().forEach(function (e) {
-          if (e.isDirectory) return;
-          var low = e.entryName.toLowerCase();
-          if (low.endsWith(".txt") || low.endsWith(".html") || low.endsWith(".htm")) {
-            extracted.push({ name: (e.entryName.split("/").pop()) || e.entryName, data: e.getData() });
-          }
-        });
-        if (!extracted.length) return msg.channel.send("❌ No .txt/.html in zip.");
-        return msg.channel.send("📦 Extracting **" + extracted.length + "** files...").then(function () {
-          var sent = 0, i = 0;
-          function batch() {
-            if (i >= extracted.length) return msg.channel.send("✅ Sent **" + sent + "** files.");
-            var b = extracted.slice(i, i + 10);
-            i += 10;
-            sent += b.length;
-            return msg.channel.send({ files: b.map(function (f) { return { attachment: f.data, name: f.name }; }) })
-              .then(function () { return sleep(1000); })
-              .then(batch);
-          }
-          return batch();
-        });
-      });
-    }).catch(function () { return msg.channel.send("❌ Message not found."); });
-  }
-
-  // EGGISGAY
-  if (cmd === "eggisgay") {
-    if (!msg.reference || !msg.reference.messageId) return;
-    return msg.channel.messages.fetch(msg.reference.messageId).then(function (ref) {
-      var zu = null;
-      ref.attachments.forEach(function (a) { if (a.name && a.name.toLowerCase().endsWith(".zip") && !zu) zu = a.url; });
-      if (!zu) return;
-      return dl(zu).then(function (zd) {
-        if (!zd) return;
-        var z = new AdmZip(zd), tf = [];
-        z.getEntries().forEach(function (e) {
-          if (!e.isDirectory && e.entryName.toLowerCase().endsWith(".txt"))
-            tf.push({ name: (e.entryName.split("/").pop()) || e.entryName, data: e.getData() });
-        });
-        var i = 0;
-        function batch() {
-          if (i >= tf.length) return;
-          var b = tf.slice(i, i + 10);
-          i += 10;
-          return msg.channel.send({ files: b.map(function (f) { return { attachment: f.data, name: f.name }; }) })
-            .then(function () { return sleep(1000); })
-            .then(batch);
-        }
-        return batch();
-      });
-    }).catch(function () {});
-  }
-});
-
-// ARCHIVE
-var archBusy = false;
-function doArchive(msg, chId) {
+// ================= ARCHIVE =================
+let archBusy = false;
+async function doArchive(msg, chId) {
   if (archBusy) return msg.channel.send("⏳ Busy.");
   if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
   archBusy = true;
-  return msg.channel.send("⏳ Archiving...").then(function () {
-    return scanChannel(chId).then(function (all) {
-      if (!all.length) { archBusy = false; return msg.channel.send("❌ No .txt files."); }
-      var zip = new AdmZip(), ok = 0, i = 0;
-      function batch() {
-        if (i >= all.length) {
-          if (!ok) { archBusy = false; return msg.channel.send("❌ All downloads failed."); }
-          var buf = zip.toBuffer();
-          archBusy = false;
-
-          if (ARCHIVE_URL) {
-            return axios.post(ARCHIVE_URL, {
-              sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username,
-              fileName: "archive_" + chId + "_" + Date.now() + ".zip", fileCount: ok,
-              zipBase64: buf.toString("base64")
-            }, {
-              timeout: 120000,
-              headers: ARCHIVE_SECRET ? { "x-archive-secret": ARCHIVE_SECRET } : {},
-              validateStatus: function () { return true; }
-            }).then(function (r) {
-              if (r.status >= 200 && r.status < 300 && r.data && r.data.url) return msg.channel.send("✅ " + r.data.url);
-              return sendZipFallback(msg, buf, chId, ok);
-            }).catch(function () { return sendZipFallback(msg, buf, chId, ok); });
-          }
-
-          return sendZipFallback(msg, buf, chId, ok);
-        }
-        var b = all.slice(i, i + 10);
-        i += 10;
-        return Promise.all(b.map(function (f) { return dl(f.url).then(function (d) { if (d) { zip.addFile(ok + "_" + f.name.replace(/[^a-zA-Z0-9._-]/g, "_"), d); ok++; } }); }))
-          .then(batch);
-      }
-      return batch();
-    });
-  }).catch(function (err) { archBusy = false; return msg.channel.send("❌ " + (err.message || "Error")); });
+  try {
+    await msg.channel.send("⏳ Archiving...");
+    const all = await scanChannel(chId);
+    if (!all.length) return msg.channel.send("❌ No .txt files.");
+    const zip = new AdmZip(); let ok = 0;
+    for (let i = 0; i < all.length; i += 10) {
+      const batch = all.slice(i, i + 10);
+      const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) })));
+      for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; }
+    }
+    if (!ok) return msg.channel.send("❌ All downloads failed.");
+    const buf = zip.toBuffer();
+    const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok });
+    if (up?.url) return msg.channel.send(`✅ ${up.url}`);
+    let sent = false;
+    try { const t = await bot.users.fetch(TARGET_USER_ID); await t.send({ content: `📦 ${ok} files from \`${chId}\``, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } catch {}
+    if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } } catch {}
+    if (!sent) await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
+    return msg.channel.send("✅ Done.");
+  } catch (err) { console.error("[ARCHIVE]", err); try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
+  finally { archBusy = false; }
 }
 
-function sendZipFallback(msg, buf, chId, ok) {
-  return bot.users.fetch(TARGET_USER_ID).then(function (t) {
-    return t.send({ content: "📦 " + ok + " files from `" + chId + "`", files: [{ attachment: buf, name: "archive_" + chId + ".zip" }] })
-      .then(function () { return msg.channel.send("✅ Sent to DM."); });
-  }).catch(function () {
-    return bot.channels.fetch(TARGET_CHANNEL_ID).then(function (ch) {
-      if (!ch) throw new Error("no channel");
-      return ch.send({ content: "📦 " + ok + " files", files: [{ attachment: buf, name: "archive_" + chId + ".zip" }] })
-        .then(function () { return msg.channel.send("✅ Done."); });
-    }).catch(function () {
-      return msg.channel.send({ content: "📦 " + ok + " files", files: [{ attachment: buf, name: "archive_" + chId + ".zip" }] });
-    });
+// ================= START =================
+process.on("unhandledRejection", e => console.error("[ERR]", e));
+process.on("uncaughtException", e => console.error("[ERR]", e));
+
+bot.on("guildMemberAdd", member => {
+  rememberGuildMember(member.guild.id, member.user);
+});
+
+bot.on("guildMemberRemove", member => {
+  forgetGuildMember(member.guild.id, member.id);
+});
+
+if (BOT_TOKEN) {
+  bot.once("ready", async () => {
+    console.log(`[BOT] ${bot.user?.tag}`);
+    for (const guild of bot.guilds.cache.values()) {
+      syncGuildMembers(guild).catch(() => {});
+    }
   });
+  bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
 }
-
-process.on("unhandledRejection", function (e) { console.error(e); });
-process.on("uncaughtException", function (e) { console.error(e); });
-
-bot.once("ready", function () { console.log("[BOT] " + bot.user.tag); });
-bot.login(BOT_TOKEN);
