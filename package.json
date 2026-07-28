@@ -1,5 +1,5 @@
 {
-  "name": "discord-bot-only-full",
+  "name": "discord-bot-full",
   "version": "1.0.0",
   "private": true,
   "main": "bot.js",
