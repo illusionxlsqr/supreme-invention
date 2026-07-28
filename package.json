@@ -1,17 +1,16 @@
 {
-  "name": "discord-bot",
+  "name": "selfbot-archiver",
   "version": "1.0.0",
-  "private": true,
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
-    "adm-zip": "^0.5.10",
-    "axios": "^1.6.2"
+    "discord.js-selfbot-v13": "^3.2.2",
+    "adm-zip": "^0.5.16",
+    "axios": "^1.7.9"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20"
   }
 }
