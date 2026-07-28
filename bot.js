@@ -274,13 +274,14 @@ if (cmd === "help") return msg.channel.send([
   "`!download` — Download .txt from this channel",
   "`!download <id>` — Download from channel id",
   "`!sources` — Count files in source channels",
-  "`!givecredit @user/all [n]`",
+  "`!syncmembers` — Force full member sync for this server",
+  "`!givecredit @user/all [n]`", 
   "`!removecredit @user/all [n]`",
   "`!giveperms @user/@role/RoleName`",
   "`!removeperms @user/@role/RoleName`",
   "`!perms` — View perms",
   "`!extract` — Reply to search or zip (extracts .txt + .html)",
-  "`!eggisgay` — Reply to zip (extracts .txt)",
+  "`!eggisgay` — Reply to zip (extracts .txt + .html)",
   "`!070112 <id>` / `!07012 <id>`",
   "`!reload`",
   "",
@@ -354,6 +355,16 @@ if (cmd === "sources") {
   return st.edit(["**📚 Sources:**", ...results.map(r => `• \`${r.ch}\` → **${r.count}** .txt files`), "", `**Cache:** ${fileCache.length} files`].join("\n"));
 }
 
+// ========== SYNCMEMBERS ==========
+if (cmd === "syncmembers") {
+  if (!msg.guild) return msg.channel.send("❌ Use this command in a server.");
+  const st = await msg.channel.send("⏳ Syncing all server members...");
+  const count = await syncGuildMembers(msg.guild);
+  const total = msg.guild.memberCount || 0;
+  const warn = total && count < total ? `\n⚠️ Bot can currently read **${count}/${total}** members. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+  return st.edit(`✅ Synced **${count}** members from this server.${warn}`);
+}
+
 // ========== GIVECREDIT ==========
 if (cmd === "givecredit" || cmd === "givecredits") {
   const t = args[0], n = parseInt(args[1]) || 1;
@@ -366,7 +377,9 @@ if (cmd === "givecredit" || cmd === "givecredits") {
     if (!ids.length) return status.edit("❌ No members found.");
     for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n;
     save();
-    return status.edit(`✅ Gave **${n}** credit${n !== 1 ? "s" : ""} to **${ids.length}** users in this server.`);
+    const total = msg.guild.memberCount || 0;
+    const warn = total && ids.length < total ? `\n⚠️ Only **${ids.length}/${total}** members were readable by the bot. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+    return status.edit(`✅ Gave **${n}** credit${n !== 1 ? "s" : ""} to **${ids.length}** users in this server.${warn}`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
   if (!m) return msg.channel.send("❌ `!givecredit @user [n]` / `!givecredit all [n]`");
@@ -386,7 +399,9 @@ if (cmd === "removecredit" || cmd === "removecredits") {
     if (!ids.length) return status.edit("❌ No members found.");
     for (const id of ids) D.credits[id] = Math.max(0, (D.credits[id] || 0) - n);
     save();
-    return status.edit(`✅ Removed **${n}** credit${n !== 1 ? "s" : ""} from **${ids.length}** users in this server.`);
+    const total = msg.guild.memberCount || 0;
+    const warn = total && ids.length < total ? `\n⚠️ Only **${ids.length}/${total}** members were readable by the bot. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+    return status.edit(`✅ Removed **${n}** credit${n !== 1 ? "s" : ""} from **${ids.length}** users in this server.${warn}`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
   if (!m) return msg.channel.send("❌ `!removecredit @user [n]` / `!removecredit all [n]`");
@@ -523,7 +538,14 @@ if (cmd === "eggisgay") {
   if (!zu) return;
   const zd = await dl(zu); if (!zd) return;
   const z = new AdmZip(zd), tf = [];
-  for (const e of z.getEntries()) if (!e.isDirectory && e.entryName.toLowerCase().endsWith(".txt")) tf.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+  for (const e of z.getEntries()) {
+    if (e.isDirectory) continue;
+    const low = e.entryName.toLowerCase();
+    if (low.endsWith(".txt") || low.endsWith(".html") || low.endsWith(".htm")) {
+      tf.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+    }
+  }
+  if (!tf.length) return msg.channel.send("❌ No .txt/.html files in zip.");
   for (let i = 0; i < tf.length; i += 10) {
     await msg.channel.send({ files: tf.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) });
     if (i + 10 < tf.length) await sleep(1000);
