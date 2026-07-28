@@ -1,6 +1,14 @@
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
+
+// Selfbot is optional: loaded lazily so the main bot never crashes if it's unavailable
+let SelfbotClient = null;
+try {
+  SelfbotClient = require('discord.js-selfbot-v13').Client;
+} catch (err) {
+  console.warn('[SELFBOT] discord.js-selfbot-v13 not available:', err?.message || err);
+}
 
 // ===== CONFIG =====
 // Tokens/IDs hardcoded as defaults — env vars (Render) can override them
@@ -357,7 +365,39 @@ function buildFullRow(index, total) {
 }
 
 // =========================================================
-//  !070112 — Uses raw API calls instead of selfbot
+//  SELFBOT — original behavior restored (optional)
+//  Starts ONLY if DISCORD_TOKEN is a real user token.
+//  Used by !070112 to send the zip as the user account.
+// =========================================================
+let selfbotClient = null;
+let selfbotReady = false;
+
+function startSelfbot() {
+  if (!SelfbotClient) {
+    console.warn('[SELFBOT] Library not installed — skipping');
+    return;
+  }
+  try {
+    selfbotClient = new SelfbotClient({ checkUpdate: false });
+    selfbotClient.on('ready', () => {
+      selfbotReady = true;
+      console.log(`[SELFBOT] Online: ${selfbotClient.user?.tag}`);
+    });
+    selfbotClient.on('error', (err) => {
+      console.error('[SELFBOT] Error:', err?.message || err);
+    });
+    selfbotClient.login(DISCORD_TOKEN).catch(err => {
+      selfbotClient = null;
+      console.error('[SELFBOT] Login failed (DISCORD_TOKEN must be a USER token):', err?.message || err);
+    });
+  } catch (err) {
+    selfbotClient = null;
+    console.error('[SELFBOT] Failed to start:', err?.message || err);
+  }
+}
+
+// =========================================================
+//  !070112 — scrape via raw API, send zip via selfbot/bot
 // =========================================================
 let selfbotProcessing = false;
 
@@ -438,21 +478,37 @@ async function handle070112(message) {
 
     if (ok > 0) {
       const zipBuffer = zip.toBuffer();
-      // Send zip via raw API if too large, otherwise via bot channel
-      try {
-        // Try sending to target channel via the bot
-        const targetChannel = await bot.channels.fetch(TARGET_CHANNEL_ID);
-        if (targetChannel) {
-          await targetChannel.send({
-            files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
-          });
+      let zipSent = false;
+
+      // 1) Original behavior: send the zip via SELFBOT (appears as user account)
+      if (selfbotReady && selfbotClient) {
+        try {
+          const destCh = await selfbotClient.channels.fetch(TARGET_CHANNEL_ID);
+          if (destCh) {
+            await destCh.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
+            zipSent = true;
+          }
+        } catch (err) {
+          console.error(`[070112] Selfbot send failed: ${err?.message || err}`);
         }
-      } catch (err) {
-        console.error(`[070112] Failed to send zip: ${err?.message || err}`);
-        // Fallback: send in same channel
-        await message.channel.send({
-          files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
-        });
+      }
+
+      // 2) Fallback: send via the bot itself
+      if (!zipSent) {
+        try {
+          const targetChannel = await bot.channels.fetch(TARGET_CHANNEL_ID);
+          if (targetChannel) {
+            await targetChannel.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
+            zipSent = true;
+          }
+        } catch (err) {
+          console.error(`[070112] Bot send failed: ${err?.message || err}`);
+        }
+      }
+
+      // 3) Last resort: send in the same channel
+      if (!zipSent) {
+        await message.channel.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
       }
     }
 
@@ -540,8 +596,8 @@ bot.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== !daily =====
-    if (content.toLowerCase() === '!daily') {
+    // ===== !claimdaily =====
+    if (content.toLowerCase() === '!claimdaily') {
       const userId = message.author.id;
       if (!canDaily(userId)) {
         const resetAt = getNextDailyReset();
@@ -563,7 +619,7 @@ bot.on('messageCreate', async (message) => {
       const canClaimDaily = canDaily(userId);
       let text = `💰 **Your balance:** **${credits}** credit${credits !== 1 ? 's' : ''} 🪙`;
       if (canClaimDaily) {
-        text += `\n🎁 Your daily is **available!** Use \`!daily\` to claim it.`;
+        text += `\n🎁 Your daily is **available!** Use \`!claimdaily\` to claim it.`;
       } else {
         const resetAt = getNextDailyReset();
         const remaining = resetAt - Date.now();
@@ -850,7 +906,7 @@ bot.on('messageCreate', async (message) => {
         if (credits > 0) {
           creditAccess = true;
         } else {
-          await message.channel.send({ content: '❌ **No permission and no credits.**\nUse `!daily` to get 1 free credit, or ask an admin for credits.' });
+          await message.channel.send({ content: '❌ **No permission and no credits.**\nUse `!claimdaily` to get 1 free credit, or ask an admin for credits.' });
           return;
         }
       }
@@ -983,7 +1039,7 @@ bot.on('messageCreate', async (message) => {
     if (content.toLowerCase() === '!help') {
       const lines = [
         '**📖 Bot Commands:**\n',
-        '`!daily` — Claim 1 free credit daily',
+        '`!claimdaily` — Claim 1 free credit daily',
         '`!balance` / `!bal` — Check your credit balance',
         '`!xlsqr <query>` — Search for files',
         '',
@@ -1038,8 +1094,16 @@ server.listen(PORT, () => {
   console.log(`[HTTP] Health server listening on port ${PORT}`);
 });
 
-// ===== START BOT =====
-console.log('[BOT] Starting...');
+// ===== START =====
+console.log('Starting bots...');
+
+// Selfbot starts ONLY with a real user token (a bot token cannot login as selfbot)
+if (DISCORD_TOKEN && DISCORD_TOKEN !== BOT_TOKEN) {
+  startSelfbot();
+} else {
+  console.log('[SELFBOT] Skipped — set DISCORD_TOKEN (user token) to enable it. !070112 will use the bot API.');
+}
+
 bot.login(BOT_TOKEN).catch(err => {
   console.error('[FATAL] Bot login failed:', err?.message || err);
   process.exit(1);
