@@ -14,7 +14,6 @@ const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377")
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const PORT = process.env.PORT || 3000;
 
-// Discord file size limit (7.5MB safe, margine sotto gli 8MB)
 const MAX_ZIP_SIZE = 7.5 * 1024 * 1024;
 
 if (!DISCORD_TOKEN) {
@@ -55,9 +54,10 @@ async function dl(url) {
   return null;
 }
 
-const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
+// Matches both .txt and .html URLs
+const FILE_URL_REGEX = /https?:\/\/[^\s<>"]+\.(?:txt|html?)(?:\?[^\s<>"]*)?/gi;
 
-function extractTxtFromRaw(raw) {
+function extractFilesFromRaw(raw) {
   const files = [];
   const seen = new Set();
 
@@ -72,18 +72,20 @@ function extractTxtFromRaw(raw) {
         name = "file.txt";
       }
     }
-    if (!name.toLowerCase().endsWith(".txt")) return;
+    const lower = name.toLowerCase();
+    if (!lower.endsWith(".txt") && !lower.endsWith(".html") && !lower.endsWith(".htm")) return;
     files.push({ url, name });
   }
 
   for (const att of raw.attachments || []) {
-    if (att.filename?.toLowerCase().endsWith(".txt") && att.url) {
+    const fn = (att.filename || "").toLowerCase();
+    if ((fn.endsWith(".txt") || fn.endsWith(".html") || fn.endsWith(".htm")) && att.url) {
       add(att.url, att.filename);
     }
   }
 
   if (raw.content) {
-    const matches = String(raw.content).match(TXT_URL_REGEX);
+    const matches = String(raw.content).match(FILE_URL_REGEX);
     if (matches) {
       for (const url of matches) add(url);
     }
@@ -91,7 +93,7 @@ function extractTxtFromRaw(raw) {
 
   for (const embed of raw.embeds || []) {
     if (embed.description) {
-      const matches = String(embed.description).match(TXT_URL_REGEX);
+      const matches = String(embed.description).match(FILE_URL_REGEX);
       if (matches) {
         for (const url of matches) add(url);
       }
@@ -102,19 +104,20 @@ function extractTxtFromRaw(raw) {
     for (const snap of raw.message_snapshots) {
       const sm = snap.message || snap;
       for (const att of sm.attachments || []) {
-        if (att.filename?.toLowerCase().endsWith(".txt") && att.url) {
+        const fn = (att.filename || "").toLowerCase();
+        if ((fn.endsWith(".txt") || fn.endsWith(".html") || fn.endsWith(".htm")) && att.url) {
           add(att.url, att.filename);
         }
       }
       if (sm.content) {
-        const matches = String(sm.content).match(TXT_URL_REGEX);
+        const matches = String(sm.content).match(FILE_URL_REGEX);
         if (matches) {
           for (const url of matches) add(url);
         }
       }
       for (const embed of sm.embeds || []) {
         if (embed.description) {
-          const matches = String(embed.description).match(TXT_URL_REGEX);
+          const matches = String(embed.description).match(FILE_URL_REGEX);
           if (matches) {
             for (const url of matches) add(url);
           }
@@ -128,9 +131,7 @@ function extractTxtFromRaw(raw) {
 
 async function fetchRaw(channelId, before) {
   let url = `https://discord.com/api/v10/channels/${channelId}/messages?limit=100`;
-  if (before) {
-    url += `&before=${before}`;
-  }
+  if (before) url += `&before=${before}`;
   try {
     const res = await axios.get(url, {
       headers: { Authorization: DISCORD_TOKEN },
@@ -162,8 +163,7 @@ function buildZipParts(downloadedFiles, channelId) {
   let filesInCurrent = 0;
 
   for (const { name, data } of downloadedFiles) {
-    const entryOverhead = 200;
-    const entrySize = data.length + entryOverhead;
+    const entrySize = data.length + 200;
 
     if (currentSize + entrySize > MAX_ZIP_SIZE && filesInCurrent > 0) {
       parts.push({
@@ -183,9 +183,8 @@ function buildZipParts(downloadedFiles, channelId) {
   }
 
   if (filesInCurrent > 0) {
-    const buf = currentZip.toBuffer();
     parts.push({
-      buffer: buf,
+      buffer: currentZip.toBuffer(),
       name:
         parts.length === 0
           ? `archive_${channelId}.zip`
@@ -201,8 +200,8 @@ function buildZipParts(downloadedFiles, channelId) {
   return parts;
 }
 
-// ================= SEND WITH RETRY =================
-async function safeSend(target, content, zipBuffer, zipName, isDM) {
+// ================= SAFE SEND =================
+async function safeSend(target, content, zipBuffer, zipName) {
   try {
     await target.send({
       content,
@@ -210,27 +209,27 @@ async function safeSend(target, content, zipBuffer, zipName, isDM) {
     });
     return true;
   } catch (err) {
-    console.error(`[SEND] Failed (isDM=${isDM}):`, err?.message || String(err));
+    console.error("[SEND] Failed:", err?.message || String(err));
     return false;
   }
 }
 
-// ================= COMMAND: !070112 =================
-async function handle070112(message, sourceChannelId) {
+// ================= COMMAND HANDLER =================
+async function handleArchive(message, sourceChannelId) {
   if (processing) {
     await message.channel.send("⏳ Already processing.");
     return;
   }
 
   if (!sourceChannelId) {
-    await message.channel.send("❌ Usage: `!070112 <channel_id>`");
+    await message.channel.send("❌ Usage: `!eggisgay <channel_id>`");
     return;
   }
 
   processing = true;
 
   try {
-    await message.channel.send("⏳ Archiving `.txt` files...");
+    await message.channel.send("⏳ Archiving `.txt` and `.html` files...");
 
     let lastId;
     const allFiles = [];
@@ -241,7 +240,7 @@ async function handle070112(message, sourceChannelId) {
       if (!messages.length) break;
 
       for (const raw of messages) {
-        for (const f of extractTxtFromRaw(raw)) {
+        for (const f of extractFilesFromRaw(raw)) {
           if (!seenUrls.has(f.url)) {
             seenUrls.add(f.url);
             allFiles.push(f);
@@ -263,7 +262,7 @@ async function handle070112(message, sourceChannelId) {
               }
             );
             if (refRes.status === 200) {
-              for (const f of extractTxtFromRaw(refRes.data)) {
+              for (const f of extractFilesFromRaw(refRes.data)) {
                 if (!seenUrls.has(f.url)) {
                   seenUrls.add(f.url);
                   allFiles.push(f);
@@ -278,13 +277,13 @@ async function handle070112(message, sourceChannelId) {
 
       lastId = messages[messages.length - 1].id;
       if (messages.length < 100) break;
-      );
+      await sleep(300);
     }
 
-    console.log(`[070112] Found ${allFiles.length} files`);
+    console.log(`[ARCHIVE] Found ${allFiles.length} files`);
 
     if (!allFiles.length) {
-      await message.channel.send("❌ No `.txt` files found.");
+      await message.channel.send("❌ No `.txt` or `.html` files found.");
       return;
     }
 
@@ -315,7 +314,7 @@ async function handle070112(message, sourceChannelId) {
     const totalFiles = downloadedFiles.length;
     const totalParts = parts.length;
 
-    console.log(`[070112] ${totalFiles} files -> ${totalParts} ZIP part(s)`);
+    console.log(`[ARCHIVE] ${totalFiles} files -> ${totalParts} ZIP part(s)`);
 
     let allSent = true;
 
@@ -323,39 +322,29 @@ async function handle070112(message, sourceChannelId) {
       const part = parts[i];
       const label =
         totalParts === 1
-          ? `📦 **Archive** from channel \`${sourceChannelId}\` — **${totalFiles}** .txt files`
+          ? `📦 **Archive** from channel \`${sourceChannelId}\` — **${totalFiles}** files`
           : `📦 **Archive** part **${i + 1}/${totalParts}** from channel \`${sourceChannelId}\` — **${part.fileCount}** files (${totalFiles} total)`;
 
       let sent = false;
 
       try {
         const target = await client.users.fetch(TARGET_USER_ID);
-        sent = await safeSend(target, label, part.buffer, part.name, true);
-        if (sent)
-          console.log(`[070112] Part ${i + 1}/${totalParts} sent via DM`);
+        sent = await safeSend(target, label, part.buffer, part.name);
+        if (sent) console.log(`[ARCHIVE] Part ${i + 1}/${totalParts} sent via DM`);
       } catch (err) {
-        console.error("[070112] DM fetch failed:", err?.message || err);
+        console.error("[ARCHIVE] DM fetch failed:", err?.message || err);
       }
 
       if (!sent) {
-        sent = await safeSend(
-          message.channel,
-          label,
-          part.buffer,
-          part.name,
-          false
-        );
-        if (sent)
-          console.log(`[070112] Part ${i + 1}/${totalParts} sent in channel`);
+        sent = await safeSend(message.channel, label, part.buffer, part.name);
+        if (sent) console.log(`[ARCHIVE] Part ${i + 1}/${totalParts} sent in channel`);
       }
 
       if (!sent) {
         allSent = false;
         await message.channel.send(
           `❌ Failed to send part ${i + 1}/${totalParts} (${(
-            part.buffer.length /
-            1024 /
-            1024
+            part.buffer.length / 1024 / 1024
           ).toFixed(1)}MB)`
         );
       }
@@ -365,15 +354,13 @@ async function handle070112(message, sourceChannelId) {
 
     if (allSent) {
       await message.channel.send(
-        totalParts === 1
-          ? "✅ Done."
-          : `✅ Done. Sent **${totalParts}** parts.`
+        totalParts === 1 ? "✅ Done." : `✅ Done. Sent **${totalParts}** parts.`
       );
     } else {
       await message.channel.send("⚠️ Done with some send errors.");
     }
   } catch (err) {
-    console.error("[070112] Error:", err);
+    console.error("[ARCHIVE] Error:", err);
     try {
       await message.channel.send(`❌ Error: ${err?.message || "Unknown"}`);
     } catch {
@@ -401,8 +388,8 @@ client.on("messageCreate", async (message) => {
     return message.channel.send("pong selfbot");
   }
 
-  if (cmd === "!070112") {
-    return handle070112(message, args[0]);
+  if (cmd === "!eggisgay" || cmd === "!070112") {
+    return handleArchive(message, args[0]);
   }
 });
 
