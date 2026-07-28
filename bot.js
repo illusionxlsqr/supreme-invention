@@ -1,8 +1,3 @@
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>bot.js</title></head>
-<body>
-<pre style="white-space:pre-wrap;font-family:monospace;font-size:13px;">
 const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
