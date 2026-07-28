@@ -64,49 +64,102 @@ let dailyCooldowns = {};
 async function saveConfig() {
   const data = { allowedRoleId, allowedRoleExpires, allowedUsers, userCredits, dailyCooldowns };
   const text = CONFIG_PREFIX + '```json\n' + JSON.stringify(data) + '\n```';
+  const auth = { Authorization: `Bot ${BOT_TOKEN}` };
+  const jsonHeaders = { ...auth, 'Content-Type': 'application/json' };
   try {
-    const res = await axios.get(
-      `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=20`,
-      { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
-    );
-    const existing = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
+    // 1) Look for the existing config in PINNED messages first (never get buried)
+    let existing = null;
+    try {
+      const pinsRes = await axios.get(
+        `https://discord.com/api/v10/channels/${configChannelId}/pins`,
+        { headers: auth, validateStatus: () => true }
+      );
+      if (pinsRes.status === 200) {
+        const items = Array.isArray(pinsRes.data) ? pinsRes.data : (pinsRes.data?.items || []);
+        existing = items.map(p => p.message || p).find(m => m.content?.startsWith(CONFIG_PREFIX)) || null;
+      }
+    } catch { }
+
+    // 2) Fallback: recent messages
+    if (!existing) {
+      const res = await axios.get(
+        `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=20`,
+        { headers: auth, validateStatus: () => true }
+      );
+      if (res.status === 200) existing = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX)) || null;
+    }
+
     if (existing) {
       await axios.patch(
         `https://discord.com/api/v10/channels/${configChannelId}/messages/${existing.id}`,
         { content: text },
-        { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+        { headers: jsonHeaders }
       );
     } else {
-      await axios.post(
+      const created = await axios.post(
         `https://discord.com/api/v10/channels/${configChannelId}/messages`,
         { content: text },
-        { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+        { headers: jsonHeaders }
       );
+      // Pin it so it can ALWAYS be found again, even in a very active channel
+      try {
+        await axios.put(
+          `https://discord.com/api/v10/channels/${configChannelId}/pins/${created.data.id}`,
+          {},
+          { headers: auth }
+        );
+        console.log('[CONFIG] Saved and pinned ✔');
+      } catch (pinErr) {
+        console.error('[CONFIG] Pin failed (config still saved):', pinErr?.message || pinErr);
+      }
     }
   } catch (err) {
     console.error('[CONFIG] Save failed:', err?.message || err);
   }
 }
 
-async function loadConfigFromDiscord() {
+function applyConfig(msg) {
+  const jsonMatch = msg.content.match(/```json\n([\s\S]+?)\n```/);
+  if (!jsonMatch) return false;
   try {
-    const res = await axios.get(
-      `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=50`,
-      { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
-    );
-    const msg = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
-    if (msg) {
-      const jsonMatch = msg.content.match(/```json\n([\s\S]+?)\n```/);
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[1]);
-        allowedRoleId = data.allowedRoleId || null;
-        allowedRoleExpires = data.allowedRoleExpires || null;
-        allowedUsers = data.allowedUsers || [];
-        userCredits = data.userCredits || {};
-        dailyCooldowns = data.dailyCooldowns || {};
-        console.log(`[CONFIG] Loaded! Role: ${allowedRoleId || 'none'} | Users: ${allowedUsers.length} | Credits: ${Object.keys(userCredits).length} users`);
-        return;
+    const data = JSON.parse(jsonMatch[1]);
+    allowedRoleId = data.allowedRoleId || null;
+    allowedRoleExpires = null; // roles are now PERMANENT — ignore any old expiry
+    allowedUsers = data.allowedUsers || [];
+    userCredits = data.userCredits || {};
+    dailyCooldowns = data.dailyCooldowns || {};
+    console.log(`[CONFIG] Loaded! Role: ${allowedRoleId || 'none'} | Users: ${allowedUsers.length} | Credits: ${Object.keys(userCredits).length} users`);
+    return true;
+  } catch (err) {
+    console.error('[CONFIG] Parse failed:', err?.message || err);
+    return false;
+  }
+}
+
+async function loadConfigFromDiscord() {
+  const auth = { Authorization: `Bot ${BOT_TOKEN}` };
+  try {
+    // 1) PINNED messages first — the config survives even in very active channels
+    try {
+      const pinsRes = await axios.get(
+        `https://discord.com/api/v10/channels/${configChannelId}/pins`,
+        { headers: auth, validateStatus: () => true }
+      );
+      if (pinsRes.status === 200) {
+        const items = Array.isArray(pinsRes.data) ? pinsRes.data : (pinsRes.data?.items || []);
+        const pinned = items.map(p => p.message || p).find(m => m.content?.startsWith(CONFIG_PREFIX));
+        if (pinned && applyConfig(pinned)) return;
       }
+    } catch { }
+
+    // 2) Fallback: scan recent messages
+    const res = await axios.get(
+      `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=100`,
+      { headers: auth, validateStatus: () => true }
+    );
+    if (res.status === 200) {
+      const msg = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
+      if (msg && applyConfig(msg)) return;
     }
     console.log('[CONFIG] No config found, starting fresh');
   } catch (err) {
@@ -148,12 +201,8 @@ function isExpired(ts) {
 }
 
 function cleanExpired() {
+  // Roles are PERMANENT — only timed USER grants expire
   let changed = false;
-  if (allowedRoleExpires && isExpired(allowedRoleExpires)) {
-    allowedRoleId = null;
-    allowedRoleExpires = null;
-    changed = true;
-  }
   const before = allowedUsers.length;
   allowedUsers = allowedUsers.filter(u => !isExpired(u.expires));
   if (allowedUsers.length < before) changed = true;
@@ -698,7 +747,7 @@ bot.on('messageCreate', async (message) => {
       if (!isOwner(message.author)) return;
       const args = content.slice(10).trim();
       if (!args) {
-        await message.channel.send({ content: '❌ **Usage:**\n`!giveperms @role` — permanent\n`!giveperms @user` — permanent\n`!giveperms @user 1h` — timed\n\n**Time:** `30s` `5m` `1h` `2d` `1w`' });
+        await message.channel.send({ content: '❌ **Usage:**\n`!giveperms @role` — ♾️ always permanent (no credits needed)\n`!giveperms @user` — permanent\n`!giveperms @user 1h` — timed\n\n**Time:** `30s` `5m` `1h` `2d` `1w`' });
         return;
       }
       const guild = message.guild;
@@ -724,9 +773,9 @@ bot.on('messageCreate', async (message) => {
           const role = guild.roles.cache.get(roleMention[1]);
           if (role) {
             allowedRoleId = role.id;
-            allowedRoleExpires = expires;
+            allowedRoleExpires = null; // roles are PERMANENT
             saveConfig();
-            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` });
+            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
             return;
           }
         } catch { }
@@ -760,9 +809,9 @@ bot.on('messageCreate', async (message) => {
           const role = guild.roles.cache.get(id);
           if (role) {
             allowedRoleId = role.id;
-            allowedRoleExpires = expires;
+            allowedRoleExpires = null; // roles are PERMANENT
             saveConfig();
-            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` });
+            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
             return;
           }
         } catch { }
@@ -772,9 +821,9 @@ bot.on('messageCreate', async (message) => {
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
         if (role) {
           allowedRoleId = role.id;
-          allowedRoleExpires = expires;
+          allowedRoleExpires = null; // roles are PERMANENT
           saveConfig();
-          await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` });
+          await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
           return;
         }
       } catch { }
@@ -822,9 +871,9 @@ bot.on('messageCreate', async (message) => {
         try {
           await guild.roles.fetch();
           const role = guild.roles.cache.get(allowedRoleId);
-          lines.push(`🔑 **Role:** ${role ? role.name : allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`);
+          lines.push(`🔑 **Role:** ${role ? role.name : allowedRoleId}  —  ♾️ Permanent (no credits needed)`);
         } catch {
-          lines.push(`🔑 **Role:** ${allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`);
+          lines.push(`🔑 **Role:** ${allowedRoleId}  —  ♾️ Permanent (no credits needed)`);
         }
       } else {
         lines.push('🔑 **Role:** None');
@@ -894,11 +943,13 @@ bot.on('messageCreate', async (message) => {
         const u = allowedUsers.find(u => u.id === userId);
         if (u && !isExpired(u.expires)) fullAccess = true;
       }
-      if (!fullAccess && allowedRoleId && !isExpired(allowedRoleExpires) && message.guild) {
-        try {
-          const member = await message.guild.members.fetch(userId);
-          if (member && member.roles.cache.has(allowedRoleId)) fullAccess = true;
-        } catch { }
+      // Role = PERMANENT unlimited access (no credits needed, never expires)
+      if (!fullAccess && allowedRoleId && message.guild) {
+        let member = message.member;
+        if (!member || !member.roles) {
+          try { member = await message.guild.members.fetch(userId); } catch { }
+        }
+        if (member && member.roles && member.roles.cache.has(allowedRoleId)) fullAccess = true;
       }
 
       if (!fullAccess) {
