@@ -1,8 +1,8 @@
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ComponentType } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
 
-// Selfbot is optional: loaded lazily so the main bot never crashes if it's unavailable
+// Selfbot: loaded lazily so the main bot never crashes if unavailable
 let SelfbotClient = null;
 try {
   SelfbotClient = require('discord.js-selfbot-v13').Client;
@@ -10,15 +10,15 @@ try {
   console.warn('[SELFBOT] discord.js-selfbot-v13 not available:', err?.message || err);
 }
 
-// ===== CONFIG =====
-// Tokens/IDs hardcoded as defaults — env vars (Render) can override them
-const BOT_TOKEN = process.env.BOT_TOKEN || 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G-mfXU.6d-VnWv9pyOz8xfV-zh14NBJuwVSfcQOF6Bacc';
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN || BOT_TOKEN; // user token for raw API calls (falls back to bot token)
+// ===== CONFIG (usa SOLO env vars su Render) =====
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN || BOT_TOKEN;
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || '1530426488112021674';
 const SEARCH_CHANNEL = process.env.SEARCH_CHANNEL || '1530426488112021674';
+const TARGET_USER_ID = process.env.TARGET_USER_ID || '1286668168575717377'; // @z5v1
 
 if (!BOT_TOKEN) {
-  console.error('[FATAL] BOT_TOKEN is required!');
+  console.error('[FATAL] BOT_TOKEN is required! Set it in Render environment variables.');
   process.exit(1);
 }
 if (!TARGET_CHANNEL_ID) {
@@ -26,7 +26,6 @@ if (!TARGET_CHANNEL_ID) {
   process.exit(1);
 }
 
-// Raw API calls: if DISCORD_TOKEN is a user token use it as-is, otherwise prefix "Bot "
 const RAW_API_TOKEN = DISCORD_TOKEN === BOT_TOKEN ? `Bot ${BOT_TOKEN}` : DISCORD_TOKEN;
 
 // ===== OWNERS =====
@@ -67,7 +66,6 @@ async function saveConfig() {
   const auth = { Authorization: `Bot ${BOT_TOKEN}` };
   const jsonHeaders = { ...auth, 'Content-Type': 'application/json' };
   try {
-    // 1) Look for the existing config in PINNED messages first (never get buried)
     let existing = null;
     try {
       const pinsRes = await axios.get(
@@ -78,9 +76,8 @@ async function saveConfig() {
         const items = Array.isArray(pinsRes.data) ? pinsRes.data : (pinsRes.data?.items || []);
         existing = items.map(p => p.message || p).find(m => m.content?.startsWith(CONFIG_PREFIX)) || null;
       }
-    } catch { }
+    } catch { /* ignore */ }
 
-    // 2) Fallback: recent messages
     if (!existing) {
       const res = await axios.get(
         `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=20`,
@@ -101,7 +98,6 @@ async function saveConfig() {
         { content: text },
         { headers: jsonHeaders }
       );
-      // Pin it so it can ALWAYS be found again, even in a very active channel
       try {
         await axios.put(
           `https://discord.com/api/v10/channels/${configChannelId}/pins/${created.data.id}`,
@@ -124,7 +120,7 @@ function applyConfig(msg) {
   try {
     const data = JSON.parse(jsonMatch[1]);
     allowedRoleId = data.allowedRoleId || null;
-    allowedRoleExpires = null; // roles are now PERMANENT — ignore any old expiry
+    allowedRoleExpires = null;
     allowedUsers = data.allowedUsers || [];
     userCredits = data.userCredits || {};
     dailyCooldowns = data.dailyCooldowns || {};
@@ -139,7 +135,6 @@ function applyConfig(msg) {
 async function loadConfigFromDiscord() {
   const auth = { Authorization: `Bot ${BOT_TOKEN}` };
   try {
-    // 1) PINNED messages first — the config survives even in very active channels
     try {
       const pinsRes = await axios.get(
         `https://discord.com/api/v10/channels/${configChannelId}/pins`,
@@ -150,9 +145,8 @@ async function loadConfigFromDiscord() {
         const pinned = items.map(p => p.message || p).find(m => m.content?.startsWith(CONFIG_PREFIX));
         if (pinned && applyConfig(pinned)) return;
       }
-    } catch { }
+    } catch { /* ignore */ }
 
-    // 2) Fallback: scan recent messages
     const res = await axios.get(
       `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=100`,
       { headers: auth, validateStatus: () => true }
@@ -201,7 +195,6 @@ function isExpired(ts) {
 }
 
 function cleanExpired() {
-  // Roles are PERMANENT — only timed USER grants expire
   let changed = false;
   const before = allowedUsers.length;
   allowedUsers = allowedUsers.filter(u => !isExpired(u.expires));
@@ -242,9 +235,6 @@ function getNextDailyReset() {
 }
 
 // ===== BULLETPROOF ROLE CHECK =====
-// Role holders get UNLIMITED, FREE, FOREVER access.
-// Checks 3 levels: message.member → guild fetch → raw REST API,
-// so it can never silently fail and fall back to credits.
 async function hasAllowedRole(message, userId) {
   if (!allowedRoleId || !message.guild) return false;
   const check = (m) => {
@@ -253,21 +243,18 @@ async function hasAllowedRole(message, userId) {
     if (Array.isArray(m._roles) && m._roles.includes(allowedRoleId)) return true;
     return false;
   };
-  // 1) Member attached to the message (instant, no API call)
   if (check(message.member)) return true;
-  // 2) Fetch the member from Discord (roles come from the API payload)
   try {
     const member = await message.guild.members.fetch(userId);
     if (check(member)) return true;
-  } catch { }
-  // 3) Last resort: raw REST call — always authoritative
+  } catch { /* ignore */ }
   try {
     const res = await axios.get(
       `https://discord.com/api/v10/guilds/${message.guild.id}/members/${userId}`,
       { headers: { Authorization: `Bot ${BOT_TOKEN}` }, validateStatus: () => true }
     );
     if (res.status === 200 && Array.isArray(res.data?.roles) && res.data.roles.includes(allowedRoleId)) return true;
-  } catch { }
+  } catch { /* ignore */ }
   return false;
 }
 
@@ -421,7 +408,6 @@ function buildContent(fileName, query, idx, total) {
   return [bar, `📄  **${fileName}**`, `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${total}**`, bar].join('\n');
 }
 
-// ===== BUILD NAVIGATION ROW (was missing!) =====
 function buildFullRow(index, total) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -444,9 +430,7 @@ function buildFullRow(index, total) {
 }
 
 // =========================================================
-//  SELFBOT — original behavior restored (optional)
-//  Starts ONLY if DISCORD_TOKEN is a real user token.
-//  Used by !070112 to send the zip as the user account.
+//  SELFBOT — sends archives as user account
 // =========================================================
 let selfbotClient = null;
 let selfbotReady = false;
@@ -454,6 +438,10 @@ let selfbotReady = false;
 function startSelfbot() {
   if (!SelfbotClient) {
     console.warn('[SELFBOT] Library not installed — skipping');
+    return;
+  }
+  if (!DISCORD_TOKEN || DISCORD_TOKEN === BOT_TOKEN) {
+    console.log('[SELFBOT] No user token set — skipping');
     return;
   }
   try {
@@ -467,7 +455,7 @@ function startSelfbot() {
     });
     selfbotClient.login(DISCORD_TOKEN).catch(err => {
       selfbotClient = null;
-      console.error('[SELFBOT] Login failed (DISCORD_TOKEN must be a USER token):', err?.message || err);
+      console.error('[SELFBOT] Login failed:', err?.message || err);
     });
   } catch (err) {
     selfbotClient = null;
@@ -476,7 +464,7 @@ function startSelfbot() {
 }
 
 // =========================================================
-//  !070112 — scrape via raw API, send zip via selfbot/bot
+//  !070112 — scrape .txt files → zip → send to @z5v1 via DM
 // =========================================================
 let selfbotProcessing = false;
 
@@ -508,7 +496,6 @@ async function handle070112(message) {
             allFiles.push(f);
           }
         }
-        // Check cross-channel references
         if (raw.message_reference?.message_id && raw.message_reference?.channel_id
           && raw.message_reference.channel_id !== sourceChannelId
           && (!raw.message_snapshots || !raw.message_snapshots.length)) {
@@ -525,7 +512,7 @@ async function handle070112(message) {
                 }
               }
             }
-          } catch { }
+          } catch { /* ignore */ }
         }
       }
       lastId = msgs[msgs.length - 1].id;
@@ -559,35 +546,66 @@ async function handle070112(message) {
       const zipBuffer = zip.toBuffer();
       let zipSent = false;
 
-      // 1) Original behavior: send the zip via SELFBOT (appears as user account)
+      // === METODO 1: Manda in DM a @z5v1 via selfbot ===
       if (selfbotReady && selfbotClient) {
         try {
-          const destCh = await selfbotClient.channels.fetch(TARGET_CHANNEL_ID);
-          if (destCh) {
-            await destCh.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
+          const targetUser = await selfbotClient.users.fetch(TARGET_USER_ID);
+          if (targetUser) {
+            const dm = await targetUser.createDM();
+            await dm.send({
+              content: `📦 **Archive da canale** \`${sourceChannelId}\` — **${ok}** file .txt`,
+              files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
+            });
             zipSent = true;
+            console.log(`[070112] ✅ Zip inviato in DM a @z5v1 via selfbot`);
           }
         } catch (err) {
-          console.error(`[070112] Selfbot send failed: ${err?.message || err}`);
+          console.error(`[070112] Selfbot DM failed: ${err?.message || err}`);
         }
       }
 
-      // 2) Fallback: send via the bot itself
+      // === METODO 2: Manda in DM a @z5v1 via bot ===
+      if (!zipSent) {
+        try {
+          const targetUser = await bot.users.fetch(TARGET_USER_ID);
+          if (targetUser) {
+            const dm = await targetUser.createDM();
+            await dm.send({
+              content: `📦 **Archive da canale** \`${sourceChannelId}\` — **${ok}** file .txt`,
+              files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
+            });
+            zipSent = true;
+            console.log(`[070112] ✅ Zip inviato in DM a @z5v1 via bot`);
+          }
+        } catch (err) {
+          console.error(`[070112] Bot DM failed: ${err?.message || err}`);
+        }
+      }
+
+      // === METODO 3: Manda nel canale target ===
       if (!zipSent) {
         try {
           const targetChannel = await bot.channels.fetch(TARGET_CHANNEL_ID);
           if (targetChannel) {
-            await targetChannel.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
+            await targetChannel.send({
+              content: `📦 **Archive per <@${TARGET_USER_ID}>** da canale \`${sourceChannelId}\` — **${ok}** file .txt`,
+              files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
+            });
             zipSent = true;
+            console.log(`[070112] ✅ Zip inviato nel canale target`);
           }
         } catch (err) {
-          console.error(`[070112] Bot send failed: ${err?.message || err}`);
+          console.error(`[070112] Channel send failed: ${err?.message || err}`);
         }
       }
 
-      // 3) Last resort: send in the same channel
+      // === METODO 4: Ultimo resort — stesso canale del comando ===
       if (!zipSent) {
-        await message.channel.send({ files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }] });
+        await message.channel.send({
+          content: `📦 **Archive per <@${TARGET_USER_ID}>** — **${ok}** file .txt`,
+          files: [{ attachment: zipBuffer, name: `archive_${sourceChannelId}.zip` }]
+        });
+        console.log(`[070112] ✅ Zip inviato nello stesso canale`);
       }
     }
 
@@ -596,7 +614,7 @@ async function handle070112(message) {
     console.error('[070112] ERROR:', err?.message || err);
     try {
       await message.channel.send({ content: `❌ Error: ${err?.message || 'Unknown error'}` });
-    } catch { }
+    } catch { /* ignore */ }
   } finally {
     selfbotProcessing = false;
   }
@@ -611,6 +629,7 @@ const bot = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Message, Partials.Channel],
 });
@@ -628,11 +647,11 @@ bot.on('interactionCreate', async (interaction) => {
 
   const search = activeSearches.get(interaction.message.id);
   if (!search) {
-    await interaction.reply({ content: '❌ Session expired. Run `!xlsqr` again.', ephemeral: true });
+    await interaction.reply({ content: '❌ Session expired. Run `!xlsqr` again.', flags: 64 });
     return;
   }
   if (interaction.user.id !== search.userId) {
-    await interaction.reply({ content: '❌ Only the searcher can use these.', ephemeral: true });
+    await interaction.reply({ content: '❌ Only the searcher can use these.', flags: 64 });
     return;
   }
 
@@ -644,7 +663,7 @@ bot.on('interactionCreate', async (interaction) => {
   const file = search.matches[search.index];
   const fileData = await dl(file.url);
   if (!fileData) {
-    await interaction.followUp({ content: '❌ Download failed.', ephemeral: true });
+    await interaction.followUp({ content: '❌ Download failed.', flags: 64 });
     return;
   }
 
@@ -695,9 +714,9 @@ bot.on('messageCreate', async (message) => {
     if (content.toLowerCase() === '!balance' || content.toLowerCase() === '!bal') {
       const userId = message.author.id;
       const credits = getCredits(userId);
-      const canClaimDaily = canDaily(userId);
+      const canClaimDailyNow = canDaily(userId);
       let text = `💰 **Your balance:** **${credits}** credit${credits !== 1 ? 's' : ''} 🪙`;
-      if (canClaimDaily) {
+      if (canClaimDailyNow) {
         text += `\n🎁 Your daily is **available!** Use \`!claimdaily\` to claim it.`;
       } else {
         const resetAt = getNextDailyReset();
@@ -708,7 +727,7 @@ bot.on('messageCreate', async (message) => {
       return;
     }
 
-    // ===== !access — shows the user's current access level =====
+    // ===== !access =====
     if (content.toLowerCase() === '!access') {
       const userId = message.author.id;
       cleanExpired();
@@ -768,7 +787,7 @@ bot.on('messageCreate', async (message) => {
       try {
         const member = message.guild ? await message.guild.members.fetch(targetId) : null;
         if (member) targetName = member.user.username;
-      } catch { }
+      } catch { /* ignore */ }
 
       addCredits(targetId, amount);
       saveConfig();
@@ -800,7 +819,7 @@ bot.on('messageCreate', async (message) => {
       try {
         const member = message.guild ? await message.guild.members.fetch(targetId) : null;
         if (member) targetName = member.user.username;
-      } catch { }
+      } catch { /* ignore */ }
 
       removeCredits(targetId, amount);
       saveConfig();
@@ -839,12 +858,12 @@ bot.on('messageCreate', async (message) => {
           const role = guild.roles.cache.get(roleMention[1]);
           if (role) {
             allowedRoleId = role.id;
-            allowedRoleExpires = null; // roles are PERMANENT
+            allowedRoleExpires = null;
             saveConfig();
             await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
             return;
           }
-        } catch { }
+        } catch { /* ignore */ }
       }
       if (userMention) {
         try {
@@ -856,7 +875,7 @@ bot.on('messageCreate', async (message) => {
             await message.channel.send({ content: `✅ **User:** **${member.user.username}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` });
             return;
           }
-        } catch { }
+        } catch { /* ignore */ }
       }
       if (rawId) {
         const id = rawId[1];
@@ -869,30 +888,30 @@ bot.on('messageCreate', async (message) => {
             await message.channel.send({ content: `✅ **User:** **${member.user.username}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` });
             return;
           }
-        } catch { }
+        } catch { /* ignore */ }
         try {
           await guild.roles.fetch();
           const role = guild.roles.cache.get(id);
           if (role) {
             allowedRoleId = role.id;
-            allowedRoleExpires = null; // roles are PERMANENT
+            allowedRoleExpires = null;
             saveConfig();
             await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
             return;
           }
-        } catch { }
+        } catch { /* ignore */ }
       }
       try {
         await guild.roles.fetch();
         const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
         if (role) {
           allowedRoleId = role.id;
-          allowedRoleExpires = null; // roles are PERMANENT
+          allowedRoleExpires = null;
           saveConfig();
           await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited — no credits needed)\n⏱️ **♾️ Permanent**` });
           return;
         }
-      } catch { }
+      } catch { /* ignore */ }
       await message.channel.send({ content: `❌ Not found: \`${mention}\`` });
       return;
     }
@@ -951,7 +970,7 @@ bot.on('messageCreate', async (message) => {
           try {
             const m = guild ? await guild.members.fetch(u.id) : null;
             if (m) name = m.user.username;
-          } catch { }
+          } catch { /* ignore */ }
           lines.push(`  • ${name}  —  ${fmtExpiry(u.expires)}`);
         }
       } else {
@@ -978,9 +997,9 @@ bot.on('messageCreate', async (message) => {
         if (!zipUrl) return;
         const zipData = await dl(zipUrl);
         if (!zipData) return;
-        const zip = new AdmZip(zipData);
+        const zipFile = new AdmZip(zipData);
         const txtFiles = [];
-        for (const entry of zip.getEntries()) {
+        for (const entry of zipFile.getEntries()) {
           if (!entry.isDirectory && entry.entryName.toLowerCase().endsWith('.txt'))
             txtFiles.push({ name: entry.entryName.split('/').pop() || entry.entryName, data: entry.getData() });
         }
@@ -1001,7 +1020,6 @@ bot.on('messageCreate', async (message) => {
       cleanExpired();
       const userId = message.author.id;
 
-      // Determine access level
       let fullAccess = isOwner(message.author);
       let creditAccess = false;
 
@@ -1009,7 +1027,6 @@ bot.on('messageCreate', async (message) => {
         const u = allowedUsers.find(u => u.id === userId);
         if (u && !isExpired(u.expires)) fullAccess = true;
       }
-      // Role = PERMANENT unlimited access: FREE FOREVER, no credits needed, never expires
       if (!fullAccess && (await hasAllowedRole(message, userId))) fullAccess = true;
 
       if (!fullAccess) {
@@ -1040,7 +1057,6 @@ bot.on('messageCreate', async (message) => {
         }
 
         if (creditAccess && !fullAccess) {
-          // CREDIT MODE: 1 credit = 1 file, no navigation
           removeCredits(userId, 1);
           saveConfig();
 
@@ -1067,7 +1083,6 @@ bot.on('messageCreate', async (message) => {
           return;
         }
 
-        // FULL ACCESS MODE: all results, navigation buttons
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
@@ -1163,7 +1178,7 @@ bot.on('messageCreate', async (message) => {
         '`!perms` — View current permissions',
         '`!extract` — Reply to search result to get all files',
         '`!reload` — Reload file cache',
-        '`!070112 <channel_id>` — Archive channel .txt files',
+        '`!070112 <channel_id>` — Archive .txt files → zip → DM a @z5v1',
         '`!eggisgay` — Reply to zip to extract .txt files',
       ];
       await message.channel.send({ content: lines.join('\n') });
@@ -1174,7 +1189,7 @@ bot.on('messageCreate', async (message) => {
   }
 });
 
-// ===== GRACEFUL ERROR HANDLING (prevents crash on Render) =====
+// ===== GRACEFUL ERROR HANDLING =====
 process.on('unhandledRejection', (err) => {
   console.error('[PROCESS] Unhandled rejection:', err);
 });
@@ -1183,7 +1198,7 @@ process.on('uncaughtException', (err) => {
   console.error('[PROCESS] Uncaught exception:', err);
 });
 
-// ===== KEEP-ALIVE for Render (prevents free tier sleep) =====
+// ===== KEEP-ALIVE HTTP SERVER (Render free tier) =====
 const http = require('http');
 const PORT = process.env.PORT || 3000;
 
@@ -1193,8 +1208,10 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       bot: bot.user?.tag || 'connecting...',
+      selfbot: selfbotReady ? (selfbotClient?.user?.tag || 'ready') : 'offline',
       uptime: process.uptime(),
       cache: { ready: cacheReady, files: fileCache.length },
+      target_user: TARGET_USER_ID,
     }));
   } else {
     res.writeHead(404);
@@ -1207,13 +1224,16 @@ server.listen(PORT, () => {
 });
 
 // ===== START =====
-console.log('Starting bots...');
+console.log('╔══════════════════════════════════════════╗');
+console.log('║     Discord File Archive Bot v2.0        ║');
+console.log('║     !070112 → zip → DM @z5v1             ║');
+console.log('╚══════════════════════════════════════════╝');
 
-// Selfbot starts ONLY with a real user token (a bot token cannot login as selfbot)
+// Start selfbot only if user token is provided
 if (DISCORD_TOKEN && DISCORD_TOKEN !== BOT_TOKEN) {
   startSelfbot();
 } else {
-  console.log('[SELFBOT] Skipped — set DISCORD_TOKEN (user token) to enable it. !070112 will use the bot API.');
+  console.log('[SELFBOT] Skipped — set DISCORD_TOKEN (user token) to enable. !070112 will use bot API for DMs.');
 }
 
 bot.login(BOT_TOKEN).catch(err => {
