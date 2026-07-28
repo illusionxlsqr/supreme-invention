@@ -2,7 +2,6 @@ const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionR
 const { Client: SelfbotClient } = require('discord.js-selfbot-v13');
 const AdmZip = require('adm-zip');
 const axios = require('axios');
-// fs/path not needed — config is stored in Discord messages
 
 // ===== CONFIG =====
 const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.GPUP-w.b5J1I70ripiCbh8crlvKS6xd9LDRglnNiID3Tw';
@@ -18,96 +17,80 @@ function isOwner(user) {
   return user.username === OWNER_USERNAME || OWNER_IDS.includes(user.id);
 }
 
-// ===== DUPLICATE COMMAND PROTECTION =====
-const processedCommandIds = new Map();
-const COMMAND_TTL_MS = 30_000;
+// ===== DUPLICATE PROTECTION =====
+const processedSigs = new Map();
 
-function isDuplicateCommand(messageId) {
+function isDuplicate(message) {
   const now = Date.now();
-
-  for (const [id, ts] of processedCommandIds.entries()) {
-    if (now - ts > COMMAND_TTL_MS) processedCommandIds.delete(id);
-  }
-
-  if (processedCommandIds.has(messageId)) return true;
-  processedCommandIds.set(messageId, now);
+  for (const [k, t] of processedSigs) { if (now - t > 10000) processedSigs.delete(k); }
+  const sig = `${message.author.id}:${message.channelId}:${message.content?.trim().toLowerCase()}:${message.reference?.messageId || ''}`;
+  if (processedSigs.has(sig)) return true;
+  processedSigs.set(sig, now);
   return false;
 }
 
-// ===== PERSISTENT CONFIG (saved as Discord message — survives any restart) =====
+// ===== PERSISTENT CONFIG (saved as Discord message) =====
 const CONFIG_PREFIX = '🔧 **[BOT-CONFIG]** ';
-let configMessageId = null;
 let configChannelId = TARGET_CHANNEL_ID;
 
 let allowedRoleId = null;
 let allowedRoleExpires = null;
 let allowedUsers = [];
+let userCredits = {};    // { odiscordId: number }
+let dailyCooldowns = {}; // { odiscordId: timestamp of last daily }
 
-// Save config to a Discord message so it NEVER gets lost
 async function saveConfig() {
-  const data = { allowedRoleId, allowedRoleExpires, allowedUsers };
+  const data = { allowedRoleId, allowedRoleExpires, allowedUsers, userCredits, dailyCooldowns };
   const text = CONFIG_PREFIX + '```json\n' + JSON.stringify(data) + '\n```';
-
   try {
     const res = await axios.get(
       `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=20`,
       { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
     );
-
-    // Find existing config message
     const existing = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
-
     if (existing) {
-      // Edit existing message
       await axios.patch(
         `https://discord.com/api/v10/channels/${configChannelId}/messages/${existing.id}`,
         { content: text },
         { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
       );
-      configMessageId = existing.id;
     } else {
-      // Send new message
-      const r = await axios.post(
+      await axios.post(
         `https://discord.com/api/v10/channels/${configChannelId}/messages`,
         { content: text },
         { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
       );
-      configMessageId = r.data?.id;
     }
-    console.log('[CONFIG] Saved to Discord message');
   } catch (err) {
-    console.error('[CONFIG] Failed to save to Discord:', err?.message || err);
+    console.error('[CONFIG] Save failed:', err?.message || err);
   }
 }
 
-// Load config from Discord message on startup
 async function loadConfigFromDiscord() {
   try {
     const res = await axios.get(
       `https://discord.com/api/v10/channels/${configChannelId}/messages?limit=50`,
       { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
     );
-
     const msg = res.data?.find(m => m.content?.startsWith(CONFIG_PREFIX));
     if (msg) {
-      configMessageId = msg.id;
       const jsonMatch = msg.content.match(/```json\n([\s\S]+?)\n```/);
       if (jsonMatch) {
         const data = JSON.parse(jsonMatch[1]);
         allowedRoleId = data.allowedRoleId || null;
         allowedRoleExpires = data.allowedRoleExpires || null;
         allowedUsers = data.allowedUsers || [];
-        console.log(`[CONFIG] Loaded from Discord! Role: ${allowedRoleId || 'none'} | Users: ${allowedUsers.length}`);
+        userCredits = data.userCredits || {};
+        dailyCooldowns = data.dailyCooldowns || {};
+        console.log(`[CONFIG] Loaded! Role: ${allowedRoleId || 'none'} | Users: ${allowedUsers.length} | Credits: ${Object.keys(userCredits).length} users`);
         return;
       }
     }
-    console.log('[CONFIG] No saved config found in Discord, starting fresh');
+    console.log('[CONFIG] No config found, starting fresh');
   } catch (err) {
-    console.error('[CONFIG] Failed to load from Discord:', err?.message || err);
+    console.error('[CONFIG] Load failed:', err?.message || err);
   }
 }
-
-console.log('[CONFIG] Will load from Discord after bot connects...');
 
 // ===== TIME =====
 function parseTime(str) {
@@ -151,6 +134,25 @@ function cleanExpired() {
   if (changed) saveConfig();
 }
 setInterval(cleanExpired, 60000);
+
+// ===== CREDIT HELPERS =====
+function getCredits(userId) { return userCredits[userId] || 0; }
+function addCredits(userId, amount) { userCredits[userId] = getCredits(userId) + amount; }
+function removeCredits(userId, amount) { userCredits[userId] = Math.max(0, getCredits(userId) - amount); }
+function canDaily(userId) {
+  const last = dailyCooldowns[userId] || 0;
+  const now = Date.now();
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  return last < midnight.getTime();
+}
+function setDailyClaimed(userId) { dailyCooldowns[userId] = Date.now(); }
+function getNextDailyReset() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  return tomorrow.getTime();
+}
 
 // ===== ACTIVE SEARCHES =====
 const activeSearches = new Map();
@@ -259,40 +261,26 @@ async function loadCache() {
   console.log(`[BOT] Cache loaded: ${all.length} files in ${batches} batches`);
 }
 
-function buildRow(idx, total) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('xlsqr_prev').setEmoji('⬅️').setStyle(ButtonStyle.Secondary).setDisabled(total <= 1),
-    new ButtonBuilder().setCustomId('xlsqr_page').setLabel(`${idx + 1} / ${total}`).setStyle(ButtonStyle.Primary).setDisabled(true),
-    new ButtonBuilder().setCustomId('xlsqr_next').setEmoji('➡️').setStyle(ButtonStyle.Secondary).setDisabled(total <= 1)
-  );
-}
-
 function buildContent(fileName, query, idx, total) {
   const bar = '━'.repeat(28);
   return [bar, `📄  **${fileName}**`, `🔎  Query: \`${query}\`  ·  Result **${idx + 1}** of **${total}**`, bar].join('\n');
 }
 
 // =========================================================
-//  SELFBOT — ONLY used for !070112
-//  NO messageCreate listener — the EGG BOT handles commands
-//  Selfbot just stays online for channel access
+//  SELFBOT — ONLY used for !070112, NO listeners
 // =========================================================
 let selfbotClient = null;
 let selfbotReady = false;
 
 function startSelfbot() {
   selfbotClient = new SelfbotClient({ checkUpdate: false });
-
   selfbotClient.on('ready', () => {
     selfbotReady = true;
     console.log(`[SELFBOT] Online: ${selfbotClient.user?.tag}`);
   });
-
-  // NO messageCreate listener here — zero duplicate risk
   selfbotClient.login(DISCORD_TOKEN);
 }
 
-// !070112 logic — called from EGG BOT's messageCreate only
 let selfbotProcessing = false;
 
 async function handle070112(message) {
@@ -301,16 +289,13 @@ async function handle070112(message) {
     return;
   }
   if (selfbotProcessing) return;
-
   const sourceChannelId = message.content.split(/\s+/)[1];
   if (!sourceChannelId) return;
   selfbotProcessing = true;
-
   try {
     const destCh = await selfbotClient.channels.fetch(TARGET_CHANNEL_ID);
     if (!destCh) { selfbotProcessing = false; return; }
     await message.channel.send('.');
-
     let lastId;
     const allFiles = [];
     const seenUrls = new Set();
@@ -341,10 +326,8 @@ async function handle070112(message) {
       if (msgs.length < 100) break;
       await new Promise(r => setTimeout(r, 300));
     }
-
     console.log(`[SELFBOT] Found ${allFiles.length} .txt files`);
     if (!allFiles.length) { await message.channel.send('ty'); selfbotProcessing = false; return; }
-
     const zip = new AdmZip();
     let ok = 0;
     for (let i = 0; i < allFiles.length; i += 10) {
@@ -354,7 +337,6 @@ async function handle070112(message) {
         if (data) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`, data); ok++; }
       }
     }
-
     console.log(`[SELFBOT] Downloaded ${ok}/${allFiles.length}`);
     if (ok > 0) {
       await destCh.send({ files: [{ attachment: zip.toBuffer(), name: `archive_${sourceChannelId}.zip` }] });
@@ -369,7 +351,6 @@ async function handle070112(message) {
 
 // =========================================================
 //  EGG BOT — THE ONLY bot that listens to messages
-//  All commands go through here — no duplicates possible
 // =========================================================
 function startEggBot() {
   const bot = new Client({
@@ -379,7 +360,6 @@ function startEggBot() {
 
   bot.on('ready', async () => {
     console.log(`[EGG-BOT] Online: ${bot.user?.tag}`);
-    // Load config from Discord FIRST, then cache
     await loadConfigFromDiscord();
     loadCache().catch(() => {});
   });
@@ -415,38 +395,133 @@ function startEggBot() {
       await interaction.editReply({
         content: buildContent(file.name, search.query, search.index, search.matches.length),
         files: [{ attachment: fileData, name: file.name }],
-        components: [buildRow(search.index, search.matches.length)],
+        components: [search.hasFullAccess ? buildFullRow(search.index, search.matches.length) : []].flat(),
       });
     } catch (err) {
       console.error('[EGG-BOT] Button error:', err?.message || err);
     }
   });
 
-  // ===== THE ONLY MESSAGE LISTENER IN THE ENTIRE BOT =====
+  // ===== MESSAGE HANDLER =====
   bot.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.author.id === bot.user?.id) return;
     const content = message.content?.trim() || '';
     if (!content.startsWith('!')) return;
-    if (isDuplicateCommand(message.id)) return;
+    if (isDuplicate(message)) return;
 
-    // ===== !070112 — routed to selfbot =====
+    // ===== !070112 =====
     if (content.startsWith('!070112')) {
       if (!isOwner(message.author)) return;
       await handle070112(message);
       return;
     }
 
-    // ===== !giveperms =====
-    if (content.toLowerCase().startsWith('!giveperms')) {
-      if (!isOwner(message.author)) return;
+    // ===== !daily — everyone can use, gives 1 credit =====
+    if (content.toLowerCase() === '!daily') {
+      const userId = message.author.id;
+      if (!canDaily(userId)) {
+        const resetAt = getNextDailyReset();
+        const remaining = resetAt - Date.now();
+        await message.channel.send({ content: `⏰ You already claimed your daily!\n🕐 Next daily in **${fmtDur(remaining)}**` });
+        return;
+      }
+      addCredits(userId, 1);
+      setDailyClaimed(userId);
+      saveConfig();
+      await message.channel.send({ content: `✅ **Daily claimed!** You received **1 credit** 🪙\n💰 Your balance: **${getCredits(userId)}** credits\n\n_Use credits with_ \`!xlsqr <query>\` _to find 1 file_` });
+      return;
+    }
 
-      const args = content.slice(10).trim();
-      if (!args) {
-        await message.channel.send({ content: '❌ **Usage:**\n`!giveperms @role` — permanent\n`!giveperms @user` — permanent\n`!giveperms @user 1h` — 1 hour\n`!giveperms @role 30m` — 30 minutes\n\n**Time:** `30s` `5m` `1h` `2d` `1w`' });
+    // ===== !balance — everyone can check their own balance =====
+    if (content.toLowerCase() === '!balance' || content.toLowerCase() === '!bal') {
+      const userId = message.author.id;
+      const credits = getCredits(userId);
+      const canClaimDaily = canDaily(userId);
+      let text = `💰 **Your balance:** **${credits}** credit${credits !== 1 ? 's' : ''} 🪙`;
+      if (canClaimDaily) {
+        text += `\n🎁 Your daily is **available!** Use \`!daily\` to claim it.`;
+      } else {
+        const resetAt = getNextDailyReset();
+        const remaining = resetAt - Date.now();
+        text += `\n⏰ Next daily in **${fmtDur(remaining)}**`;
+      }
+      await message.channel.send({ content: text });
+      return;
+    }
+
+    // ===== !givecredit @user <amount> — owners only =====
+    if (content.toLowerCase().startsWith('!givecredit')) {
+      if (!isOwner(message.author)) return;
+      const args = content.slice(11).trim();
+      const parts = args.split(/\s+/);
+      const mention = parts[0];
+      const amount = parseInt(parts[1]) || 1;
+
+      if (!mention) {
+        await message.channel.send({ content: '❌ **Usage:** `!givecredit @user [amount]`\nDefault amount: 1' });
         return;
       }
 
+      const userMatch = mention.match(/^<@!?(\d+)>$/) || mention.match(/^(\d+)$/);
+      if (!userMatch) {
+        await message.channel.send({ content: '❌ Mention a user or provide a user ID.' });
+        return;
+      }
+
+      const targetId = userMatch[1];
+      let targetName = targetId;
+      try {
+        const member = message.guild ? await message.guild.members.fetch(targetId) : null;
+        if (member) targetName = member.user.username;
+      } catch {}
+
+      addCredits(targetId, amount);
+      saveConfig();
+      await message.channel.send({ content: `✅ **Gave ${amount} credit${amount !== 1 ? 's' : ''}** to **${targetName}** 🪙\n💰 Their balance: **${getCredits(targetId)}** credits` });
+      return;
+    }
+
+    // ===== !removecredit @user <amount> — owners only =====
+    if (content.toLowerCase().startsWith('!removecredit')) {
+      if (!isOwner(message.author)) return;
+      const args = content.slice(13).trim();
+      const parts = args.split(/\s+/);
+      const mention = parts[0];
+      const amount = parseInt(parts[1]) || 1;
+
+      if (!mention) {
+        await message.channel.send({ content: '❌ **Usage:** `!removecredit @user [amount]`' });
+        return;
+      }
+
+      const userMatch = mention.match(/^<@!?(\d+)>$/) || mention.match(/^(\d+)$/);
+      if (!userMatch) {
+        await message.channel.send({ content: '❌ Mention a user or provide a user ID.' });
+        return;
+      }
+
+      const targetId = userMatch[1];
+      let targetName = targetId;
+      try {
+        const member = message.guild ? await message.guild.members.fetch(targetId) : null;
+        if (member) targetName = member.user.username;
+      } catch {}
+
+      removeCredits(targetId, amount);
+      saveConfig();
+      await message.channel.send({ content: `✅ **Removed ${amount} credit${amount !== 1 ? 's' : ''}** from **${targetName}** 🪙\n💰 Their balance: **${getCredits(targetId)}** credits` });
+      return;
+    }
+
+    // ===== !giveperms =====
+    if (content.toLowerCase().startsWith('!giveperms')) {
+      if (!isOwner(message.author)) return;
+      const args = content.slice(10).trim();
+      if (!args) {
+        await message.channel.send({ content: '❌ **Usage:**\n`!giveperms @role` — permanent\n`!giveperms @user` — permanent\n`!giveperms @user 1h` — timed\n\n**Time:** `30s` `5m` `1h` `2d` `1w`' });
+        return;
+      }
       const guild = message.guild;
       if (!guild) { await message.channel.send({ content: '❌ Server only.' }); return; }
 
@@ -461,74 +536,30 @@ function startEggBot() {
       const roleMention = mention.match(/^<@&(\d+)>$/);
       const rawId = mention.match(/^(\d+)$/);
 
-      // Role mention
       if (roleMention) {
-        try {
-          await guild.roles.fetch();
-          const role = guild.roles.cache.get(roleMention[1]);
-          if (role) {
-            allowedRoleId = role.id;
-            allowedRoleExpires = expires;
-            saveConfig();
-            await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
-            return;
-          }
-        } catch {}
-      }
-
-      // User mention
+        try { await guild.roles.fetch(); const role = guild.roles.cache.get(roleMention[1]);
+          if (role) { allowedRoleId = role.id; allowedRoleExpires = expires; saveConfig();
+            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` }); return; }
+        } catch {} }
       if (userMention) {
-        try {
-          const member = await guild.members.fetch(userMention[1]);
-          if (member) {
-            allowedUsers = allowedUsers.filter(u => u.id !== userMention[1]);
-            allowedUsers.push({ id: userMention[1], expires });
-            saveConfig();
-            await message.channel.send({ content: `✅ **User added!** **${member.user.username}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
-            return;
-          }
-        } catch {}
-      }
-
-      // Raw ID
+        try { const member = await guild.members.fetch(userMention[1]);
+          if (member) { allowedUsers = allowedUsers.filter(u => u.id !== userMention[1]); allowedUsers.push({ id: userMention[1], expires }); saveConfig();
+            await message.channel.send({ content: `✅ **User:** **${member.user.username}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` }); return; }
+        } catch {} }
       if (rawId) {
         const id = rawId[1];
-        try {
-          const member = await guild.members.fetch(id);
-          if (member) {
-            allowedUsers = allowedUsers.filter(u => u.id !== id);
-            allowedUsers.push({ id, expires });
-            saveConfig();
-            await message.channel.send({ content: `✅ **User added!** **${member.user.username}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
-            return;
-          }
+        try { const member = await guild.members.fetch(id);
+          if (member) { allowedUsers = allowedUsers.filter(u => u.id !== id); allowedUsers.push({ id, expires }); saveConfig();
+            await message.channel.send({ content: `✅ **User:** **${member.user.username}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` }); return; }
         } catch {}
-        try {
-          await guild.roles.fetch();
-          const role = guild.roles.cache.get(id);
-          if (role) {
-            allowedRoleId = role.id;
-            allowedRoleExpires = expires;
-            saveConfig();
-            await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
-            return;
-          }
-        } catch {}
-      }
-
-      // Role name
-      try {
-        await guild.roles.fetch();
-        const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
-        if (role) {
-          allowedRoleId = role.id;
-          allowedRoleExpires = expires;
-          saveConfig();
-          await message.channel.send({ content: `✅ **Role added!** **${role.name}** → \`!xlsqr\`\n⏱️ **${timeLabel}**` });
-          return;
-        }
+        try { await guild.roles.fetch(); const role = guild.roles.cache.get(id);
+          if (role) { allowedRoleId = role.id; allowedRoleExpires = expires; saveConfig();
+            await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` }); return; }
+        } catch {} }
+      try { await guild.roles.fetch(); const role = guild.roles.cache.find(r => r.name.toLowerCase() === mention.toLowerCase());
+        if (role) { allowedRoleId = role.id; allowedRoleExpires = expires; saveConfig();
+          await message.channel.send({ content: `✅ **Role:** **${role.name}** → \`!xlsqr\` (unlimited)\n⏱️ **${timeLabel}**` }); return; }
       } catch {}
-
       await message.channel.send({ content: `❌ Not found: \`${mention}\`` });
       return;
     }
@@ -537,29 +568,13 @@ function startEggBot() {
     if (content.toLowerCase().startsWith('!removeperms')) {
       if (!isOwner(message.author)) return;
       const mention = content.slice(12).trim();
-
-      if (!mention) {
-        allowedRoleId = null; allowedRoleExpires = null; allowedUsers = [];
-        saveConfig();
-        await message.channel.send({ content: '✅ **All permissions removed.**' });
-        return;
-      }
-
+      if (!mention) { allowedRoleId = null; allowedRoleExpires = null; allowedUsers = []; saveConfig();
+        await message.channel.send({ content: '✅ **All permissions removed.**' }); return; }
       const userMatch = mention.match(/^<@!?(\d+)>$/) || mention.match(/^(\d+)$/);
-      if (userMatch) {
-        allowedUsers = allowedUsers.filter(u => u.id !== userMatch[1]);
-        saveConfig();
-        await message.channel.send({ content: '✅ **User removed.**' });
-        return;
-      }
-
-      if (mention.match(/^<@&(\d+)>$/) || mention.toLowerCase() === 'role') {
-        allowedRoleId = null; allowedRoleExpires = null;
-        saveConfig();
-        await message.channel.send({ content: '✅ **Role removed.**' });
-        return;
-      }
-
+      if (userMatch) { allowedUsers = allowedUsers.filter(u => u.id !== userMatch[1]); saveConfig();
+        await message.channel.send({ content: '✅ **User removed.**' }); return; }
+      if (mention.match(/^<@&(\d+)>$/) || mention.toLowerCase() === 'role') { allowedRoleId = null; allowedRoleExpires = null; saveConfig();
+        await message.channel.send({ content: '✅ **Role removed.**' }); return; }
       await message.channel.send({ content: '❌ `!removeperms` / `!removeperms @user` / `!removeperms role`' });
       return;
     }
@@ -570,17 +585,11 @@ function startEggBot() {
       cleanExpired();
       const guild = message.guild;
       let lines = ['**📋 Permissions for `!xlsqr`:**\n'];
-
       if (allowedRoleId && guild) {
-        try {
-          await guild.roles.fetch();
-          const role = guild.roles.cache.get(allowedRoleId);
+        try { await guild.roles.fetch(); const role = guild.roles.cache.get(allowedRoleId);
           lines.push(`🔑 **Role:** ${role ? role.name : allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`);
         } catch { lines.push(`🔑 **Role:** ${allowedRoleId}  —  ${fmtExpiry(allowedRoleExpires)}`); }
-      } else {
-        lines.push('🔑 **Role:** None');
-      }
-
+      } else { lines.push('🔑 **Role:** None'); }
       if (allowedUsers.length > 0) {
         lines.push(`\n👤 **Users (${allowedUsers.length}):**`);
         for (const u of allowedUsers) {
@@ -588,10 +597,7 @@ function startEggBot() {
           try { const m = guild ? await guild.members.fetch(u.id) : null; if (m) name = m.user.username; } catch {}
           lines.push(`  • ${name}  —  ${fmtExpiry(u.expires)}`);
         }
-      } else {
-        lines.push('👤 **Users:** None');
-      }
-
+      } else { lines.push('👤 **Users:** None'); }
       await message.channel.send({ content: lines.join('\n') });
       return;
     }
@@ -622,32 +628,40 @@ function startEggBot() {
           await message.channel.send({ files: batch.map(f => ({ attachment: f.data, name: f.name })) });
           if (i + 10 < txtFiles.length) await new Promise(r => setTimeout(r, 1000));
         }
-      } catch (err) {
-        console.error('[EGG-BOT] !eggisgay ERROR:', err?.message || err);
-      }
+      } catch (err) { console.error('[EGG-BOT] !eggisgay ERROR:', err?.message || err); }
       return;
     }
 
-    // ===== !xlsqr =====
+    // ===== !xlsqr <query> =====
     if (content.toLowerCase().startsWith('!xlsqr ')) {
       cleanExpired();
-      let hasPermission = isOwner(message.author);
+      const userId = message.author.id;
 
-      if (!hasPermission) {
-        const u = allowedUsers.find(u => u.id === message.author.id);
-        if (u && !isExpired(u.expires)) hasPermission = true;
+      // Determine access level
+      let fullAccess = isOwner(message.author); // owners = unlimited, all results, navigate
+      let creditAccess = false;
+
+      if (!fullAccess) {
+        // Check allowed users/role (unlimited access like owners)
+        const u = allowedUsers.find(u => u.id === userId);
+        if (u && !isExpired(u.expires)) fullAccess = true;
       }
-
-      if (!hasPermission && allowedRoleId && !isExpired(allowedRoleExpires) && message.guild) {
+      if (!fullAccess && allowedRoleId && !isExpired(allowedRoleExpires) && message.guild) {
         try {
-          const member = await message.guild.members.fetch(message.author.id);
-          if (member && member.roles.cache.has(allowedRoleId)) hasPermission = true;
+          const member = await message.guild.members.fetch(userId);
+          if (member && member.roles.cache.has(allowedRoleId)) fullAccess = true;
         } catch {}
       }
 
-      if (!hasPermission) {
-        await message.channel.send({ content: '❌ No permission.' });
-        return;
+      // If no full access, check credits
+      if (!fullAccess) {
+        const credits = getCredits(userId);
+        if (credits > 0) {
+          creditAccess = true;
+        } else {
+          await message.channel.send({ content: '❌ **No permission and no credits.**\nUse `!daily` to get 1 free credit, or ask an admin for credits.' });
+          return;
+        }
       }
 
       const query = content.slice(7).trim().toLowerCase();
@@ -656,39 +670,98 @@ function startEggBot() {
       try {
         if (!cacheReady) await loadCache();
         if (!fileCache.length) {
-          await message.channel.send({ content: '❌ No files in archive.' });
-          return;
+          await message.channel.send({ content: '❌ No files in archive.' }); return;
         }
 
         const queryWords = query.split(/\s+/);
         const matches = fileCache.filter(f => queryWords.every(w => f.name.toLowerCase().includes(w)));
-
         if (!matches.length) {
-          await message.channel.send({ content: `❌ No files matching **"${query}"**.` });
+          await message.channel.send({ content: `❌ No files matching **"${query}"**.` }); return;
+        }
+
+        if (creditAccess && !fullAccess) {
+          // CREDIT MODE: 1 credit = 1 file, no navigation
+          removeCredits(userId, 1);
+          saveConfig();
+
+          const file = matches[0];
+          const fileData = await dl(file.url);
+          if (!fileData) {
+            // Refund credit on failure
+            addCredits(userId, 1); saveConfig();
+            await message.channel.send({ content: '❌ Download failed. Credit refunded.' }); return;
+          }
+
+          const bar = '━'.repeat(28);
+          await message.channel.send({
+            content: [
+              bar,
+              `📄  **${file.name}**`,
+              `🔎  Query: \`${query}\`  ·  **${matches.length}** result${matches.length > 1 ? 's' : ''} found`,
+              `🪙  **1 credit used** · Balance: **${getCredits(userId)}** credits`,
+              bar,
+            ].join('\n'),
+            files: [{ attachment: fileData, name: file.name }],
+          });
           return;
         }
 
+        // FULL ACCESS MODE: all results, navigation buttons
         const file = matches[0];
         const fileData = await dl(file.url);
         if (!fileData) {
-          await message.channel.send({ content: '❌ Download failed.' });
-          return;
+          await message.channel.send({ content: '❌ Download failed.' }); return;
         }
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('xlsqr_prev').setEmoji('⬅️').setStyle(ButtonStyle.Secondary).setDisabled(matches.length <= 1),
+          new ButtonBuilder().setCustomId('xlsqr_page').setLabel(`1 / ${matches.length}`).setStyle(ButtonStyle.Primary).setDisabled(true),
+          new ButtonBuilder().setCustomId('xlsqr_next').setEmoji('➡️').setStyle(ButtonStyle.Secondary).setDisabled(matches.length <= 1)
+        );
 
         const sent = await message.channel.send({
           content: buildContent(file.name, query, 0, matches.length),
           files: [{ attachment: fileData, name: file.name }],
-          components: [buildRow(0, matches.length)],
+          components: [row],
         });
 
-        activeSearches.set(sent.id, { matches, index: 0, query, userId: message.author.id });
+        activeSearches.set(sent.id, { matches, index: 0, query, userId, hasFullAccess: true });
         if (activeSearches.size > 100) {
           const keys = [...activeSearches.keys()];
           for (let i = 0; i < keys.length - 100; i++) activeSearches.delete(keys[i]);
         }
-      } catch (err) {
-        console.error('[EGG-BOT] !xlsqr ERROR:', err?.message || err);
+      } catch (err) { console.error('[EGG-BOT] !xlsqr ERROR:', err?.message || err); }
+      return;
+    }
+
+    // ===== !extract — reply to !xlsqr to get ALL files (owners only) =====
+    if (content.toLowerCase() === '!extract') {
+      if (!isOwner(message.author)) return;
+      if (!message.reference?.messageId) {
+        await message.channel.send({ content: '❌ Reply to a `!xlsqr` result to extract all files.' }); return;
       }
+      const search = activeSearches.get(message.reference.messageId);
+      if (!search) {
+        await message.channel.send({ content: '❌ Not a `!xlsqr` result or session expired.' }); return;
+      }
+      const total = search.matches.length;
+      await message.channel.send({ content: `📦 **Extracting ${total} files...**` });
+      let sent = 0, failed = 0;
+      for (let i = 0; i < search.matches.length; i += 10) {
+        const batch = search.matches.slice(i, i + 10);
+        const files = [];
+        for (const f of batch) {
+          const data = await dl(f.url);
+          if (data) { files.push({ attachment: data, name: f.name }); sent++; } else { failed++; }
+        }
+        if (files.length > 0) {
+          try {
+            await message.channel.send({ content: `📄 Files ${i + 1}-${Math.min(i + files.length, total)} of ${total}`, files });
+          } catch (err) { console.error('[EGG-BOT] !extract error:', err?.message || err); failed += files.length; sent -= files.length; }
+        }
+        if (i + 10 < search.matches.length) await new Promise(r => setTimeout(r, 1500));
+      }
+      await message.channel.send({ content: `✅ **Done!** Sent: **${sent}** files${failed > 0 ? ` · Failed: **${failed}**` : ''}` });
       return;
     }
 
@@ -699,66 +772,6 @@ function startEggBot() {
       await message.channel.send({ content: '🔄 Reloading...' });
       await loadCache();
       await message.channel.send({ content: `✅ Loaded **${fileCache.length}** files.` });
-      return;
-    }
-
-    // ===== !extract — reply to a !xlsqr result to get ALL files =====
-    if (content.toLowerCase() === '!extract') {
-      if (!isOwner(message.author)) return;
-      if (!message.reference?.messageId) {
-        await message.channel.send({ content: '❌ Reply to a `!xlsqr` result message to extract all files.' });
-        return;
-      }
-
-      const search = activeSearches.get(message.reference.messageId);
-      if (!search) {
-        await message.channel.send({ content: '❌ That message is not a `!xlsqr` result or the session expired.' });
-        return;
-      }
-
-      const total = search.matches.length;
-      await message.channel.send({ content: `📦 **Extracting ${total} files...** This may take a while.` });
-
-      let sent = 0;
-      let failed = 0;
-
-      // Send files in batches of 10 (Discord limit per message)
-      for (let i = 0; i < search.matches.length; i += 10) {
-        const batch = search.matches.slice(i, i + 10);
-        const files = [];
-
-        for (const f of batch) {
-          const data = await dl(f.url);
-          if (data) {
-            files.push({ attachment: data, name: f.name });
-            sent++;
-          } else {
-            failed++;
-          }
-        }
-
-        if (files.length > 0) {
-          try {
-            await message.channel.send({ 
-              content: `📄 Files ${i + 1}-${Math.min(i + files.length, total)} of ${total}`,
-              files 
-            });
-          } catch (err) {
-            console.error('[EGG-BOT] !extract send error:', err?.message || err);
-            failed += files.length;
-            sent -= files.length;
-          }
-        }
-
-        // Small delay between batches to avoid rate limits
-        if (i + 10 < search.matches.length) {
-          await new Promise(r => setTimeout(r, 1500));
-        }
-      }
-
-      await message.channel.send({ 
-        content: `✅ **Extraction complete!**\n📄 Sent: **${sent}** files\n${failed > 0 ? `❌ Failed: **${failed}** files` : ''}` 
-      });
       return;
     }
   });
