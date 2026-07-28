@@ -241,6 +241,36 @@ function getNextDailyReset() {
   return tomorrow.getTime();
 }
 
+// ===== BULLETPROOF ROLE CHECK =====
+// Role holders get UNLIMITED, FREE, FOREVER access.
+// Checks 3 levels: message.member → guild fetch → raw REST API,
+// so it can never silently fail and fall back to credits.
+async function hasAllowedRole(message, userId) {
+  if (!allowedRoleId || !message.guild) return false;
+  const check = (m) => {
+    if (!m) return false;
+    if (m.roles && m.roles.cache && m.roles.cache.has(allowedRoleId)) return true;
+    if (Array.isArray(m._roles) && m._roles.includes(allowedRoleId)) return true;
+    return false;
+  };
+  // 1) Member attached to the message (instant, no API call)
+  if (check(message.member)) return true;
+  // 2) Fetch the member from Discord (roles come from the API payload)
+  try {
+    const member = await message.guild.members.fetch(userId);
+    if (check(member)) return true;
+  } catch { }
+  // 3) Last resort: raw REST call — always authoritative
+  try {
+    const res = await axios.get(
+      `https://discord.com/api/v10/guilds/${message.guild.id}/members/${userId}`,
+      { headers: { Authorization: `Bot ${BOT_TOKEN}` }, validateStatus: () => true }
+    );
+    if (res.status === 200 && Array.isArray(res.data?.roles) && res.data.roles.includes(allowedRoleId)) return true;
+  } catch { }
+  return false;
+}
+
 // ===== ACTIVE SEARCHES =====
 const activeSearches = new Map();
 
@@ -678,6 +708,42 @@ bot.on('messageCreate', async (message) => {
       return;
     }
 
+    // ===== !access — shows the user's current access level =====
+    if (content.toLowerCase() === '!access') {
+      const userId = message.author.id;
+      cleanExpired();
+      const lines = [`**🔐 Access status for ${message.author.username}:**\n`];
+      const owner = isOwner(message.author);
+      if (owner) lines.push('👑 **Owner** — unlimited & free');
+      const u = allowedUsers.find(u => u.id === userId);
+      const userOk = u && !isExpired(u.expires);
+      if (userOk) lines.push(`👤 **Allowed user** — ${fmtExpiry(u.expires)}`);
+      let roleOk = false;
+      if (allowedRoleId) {
+        if (message.guild) {
+          roleOk = await hasAllowedRole(message, userId);
+          lines.push(roleOk
+            ? '🔑 **Allowed role** — unlimited & **FREE FOREVER** ♾️'
+            : `🔑 Role <@&${allowedRoleId}> is enabled, but you **don't have it**`);
+        } else {
+          lines.push('🔑 A role is enabled, but roles only work inside the server');
+        }
+      } else {
+        lines.push('🔑 No role enabled (owner can set one with `!giveperms @role`)');
+      }
+      const unlimited = owner || userOk || roleOk;
+      if (unlimited) {
+        lines.push('\n✅ **`!xlsqr` is UNLIMITED and FREE for you — no credits needed, ever!**');
+      } else {
+        lines.push(`\n🪙 **Credits:** ${getCredits(userId)} — every \`!xlsqr\` costs 1 credit`);
+        lines.push(canDaily(userId)
+          ? '🎁 Daily available! Use `!claimdaily`'
+          : `⏰ Next daily in **${fmtDur(getNextDailyReset() - Date.now())}**`);
+      }
+      await message.channel.send({ content: lines.join('\n') });
+      return;
+    }
+
     // ===== !givecredit @user <amount> =====
     if (content.toLowerCase().startsWith('!givecredit')) {
       if (!isOwner(message.author)) return;
@@ -943,14 +1009,8 @@ bot.on('messageCreate', async (message) => {
         const u = allowedUsers.find(u => u.id === userId);
         if (u && !isExpired(u.expires)) fullAccess = true;
       }
-      // Role = PERMANENT unlimited access (no credits needed, never expires)
-      if (!fullAccess && allowedRoleId && message.guild) {
-        let member = message.member;
-        if (!member || !member.roles) {
-          try { member = await message.guild.members.fetch(userId); } catch { }
-        }
-        if (member && member.roles && member.roles.cache.has(allowedRoleId)) fullAccess = true;
-      }
+      // Role = PERMANENT unlimited access: FREE FOREVER, no credits needed, never expires
+      if (!fullAccess && (await hasAllowedRole(message, userId))) fullAccess = true;
 
       if (!fullAccess) {
         const credits = getCredits(userId);
@@ -1092,6 +1152,7 @@ bot.on('messageCreate', async (message) => {
         '**📖 Bot Commands:**\n',
         '`!claimdaily` — Claim 1 free credit daily',
         '`!balance` / `!bal` — Check your credit balance',
+        '`!access` — Check your access level (role = free forever)',
         '`!xlsqr <query>` — Search for files',
         '',
         '**👑 Owner Commands:**',
