@@ -16,7 +16,10 @@ const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
 const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
 const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1530426488112021674,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
 const PORT = process.env.PORT || 3000;
-const RAW = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
+
+// FIX: Define AUTH properly (was using undefined AUTH, should be RAW)
+const AUTH = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
+const RAW = AUTH; // Keep RAW as alias for compatibility
 
 // ================= HEALTH (subito) =================
 http.createServer((req, res) => {
@@ -72,28 +75,73 @@ async function syncGuildMembers(guild) {
   try {
     if (!D.guildMembers[guild.id]) D.guildMembers[guild.id] = {};
     let after = "0";
+    let totalFetched = 0;
+    
+    console.log(`[MEMBERS] Starting sync for guild ${guild.id} (${guild.name})...`);
+    
     while (true) {
       const url = `https://discord.com/api/v10/guilds/${guild.id}/members?limit=1000&after=${after}`;
-      const res = await axios.get(url, { headers: { Authorization: AUTH }, validateStatus: () => true });
+      console.log(`[MEMBERS] Fetching batch after=${after}...`);
+      
+      const res = await axios.get(url, { 
+        headers: { Authorization: AUTH }, // FIX: Was using undefined AUTH, now properly defined
+        validateStatus: () => true 
+      });
+      
       if (res.status === 429) {
-        await sleep(((res.data && res.data.retry_after) || 5) * 1000);
+        const retryAfter = ((res.data && res.data.retry_after) || 5) * 1000;
+        console.log(`[MEMBERS] Rate limited, waiting ${retryAfter}ms...`);
+        await sleep(retryAfter);
         continue;
       }
-      if (res.status !== 200 || !Array.isArray(res.data)) throw new Error(`status ${res.status}`);
-      if (!res.data.length) break;
+      
+      if (res.status === 403) {
+        console.error(`[MEMBERS] 403 Forbidden - Bot lacks permissions. Make sure:`);
+        console.error(`  1. Server Members Intent is enabled in Discord Developer Portal`);
+        console.error(`  2. Bot has been re-invited with updated scopes`);
+        throw new Error(`403 Forbidden - Missing Server Members Intent or permissions`);
+      }
+      
+      if (res.status === 401) {
+        console.error(`[MEMBERS] 401 Unauthorized - Invalid bot token`);
+        throw new Error(`401 Unauthorized - Invalid token`);
+      }
+      
+      if (res.status !== 200 || !Array.isArray(res.data)) {
+        console.error(`[MEMBERS] Unexpected response: status=${res.status}`, res.data);
+        throw new Error(`status ${res.status}`);
+      }
+      
+      if (!res.data.length) {
+        console.log(`[MEMBERS] No more members to fetch`);
+        break;
+      }
+      
+      let batchCount = 0;
       for (const member of res.data) {
         const user = member.user;
         if (!user || user.bot) continue;
         D.guildMembers[guild.id][user.id] = user.username || user.id;
         D.known[user.id] = user.username || user.id;
         after = user.id;
+        batchCount++;
+        totalFetched++;
       }
-      if (res.data.length < 1000) break;
+      
+      console.log(`[MEMBERS] Batch: ${batchCount} members (total: ${totalFetched})`);
+      
+      if (res.data.length < 1000) {
+        console.log(`[MEMBERS] Last batch (${res.data.length} < 1000), sync complete`);
+        break;
+      }
+      
       await sleep(250);
     }
+    
     save();
-    console.log(`[MEMBERS] Synced ${Object.keys(D.guildMembers[guild.id]).length} members for guild ${guild.id}`);
-    return Object.keys(D.guildMembers[guild.id]).length;
+    const finalCount = Object.keys(D.guildMembers[guild.id]).length;
+    console.log(`[MEMBERS] Synced ${finalCount} members for guild ${guild.id} (${guild.name})`);
+    return finalCount;
   } catch (err) {
     console.error(`[MEMBERS] Sync failed for guild ${guild.id}:`, err.message);
     return getAllKnownIdsForGuild(guild.id).length;
@@ -170,7 +218,7 @@ async function fetchMsgs(chId, before) {
   let url = `https://discord.com/api/v10/channels/${chId}/messages?limit=100`;
   if (before) url += `&before=${before}`;
   try {
-    const r = await axios.get(url, { headers: { Authorization: RAW }, validateStatus: () => true });
+    const r = await axios.get(url, { headers: { Authorization: AUTH }, validateStatus: () => true });
     if (r.status === 429) { await sleep((r.data?.retry_after || 5) * 1000); return fetchMsgs(chId, before); }
     return r.status === 200 && Array.isArray(r.data) ? r.data : [];
   } catch { return []; }
@@ -215,8 +263,14 @@ async function uploadZip(opts) {
 
 // ================= BOT =================
 const bot = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages],
-  partials: [Partials.Message, Partials.Channel]
+  intents: [
+    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.GuildMessages, 
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.GuildMembers,  // Required for member sync
+    GatewayIntentBits.DirectMessages
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember]  // Added GuildMember partial
 });
 
 const searches = new Map();
@@ -284,9 +338,36 @@ if (cmd === "help") return msg.channel.send([
   "`!eggisgay` — Reply to zip (extracts .txt + .html)",
   "`!070112 <id>` / `!07012 <id>`",
   "`!reload`",
+  "`!debug` — Show bot status and intent info",
   "",
   `**Cache:** ${fileCache.length} files`
 ].join("\n"));
+
+// ========== DEBUG ==========
+if (cmd === "debug" && isOwner(msg.author)) {
+  const guildId = msg.guild?.id;
+  const cachedMembers = guildId && D.guildMembers[guildId] ? Object.keys(D.guildMembers[guildId]).length : 0;
+  const knownUsers = Object.keys(D.known).length;
+  const guildMemberCount = msg.guild?.memberCount || 0;
+  
+  return msg.channel.send([
+    "**🔧 Debug Info:**",
+    `Bot: \`${bot.user?.tag}\``,
+    `Guild: \`${msg.guild?.name || "DM"}\` (${guildId || "N/A"})`,
+    `Guild Member Count: **${guildMemberCount}**`,
+    `Cached Members (this guild): **${cachedMembers}**`,
+    `Known Users (global): **${knownUsers}**`,
+    `AUTH defined: **${AUTH ? "Yes" : "NO (BUG!)"}**`,
+    `BOT_TOKEN defined: **${BOT_TOKEN ? "Yes" : "NO"}**`,
+    "",
+    "**Intents:**",
+    `GuildMembers: ✅ (configured in code)`,
+    "",
+    "**If sync fails, check:**",
+    "1. Discord Developer Portal → Bot → Privileged Gateway Intents → Server Members Intent ✅",
+    "2. Re-invite bot with updated OAuth2 URL if recently enabled"
+  ].join("\n"));
+}
 
 // ========== CLAIMDAILY ==========
 if (cmd === "claimdaily") {
@@ -358,10 +439,26 @@ if (cmd === "sources") {
 // ========== SYNCMEMBERS ==========
 if (cmd === "syncmembers") {
   if (!msg.guild) return msg.channel.send("❌ Use this command in a server.");
-  const st = await msg.channel.send("⏳ Syncing all server members...");
+  const st = await msg.channel.send("⏳ Syncing all server members via API...");
   const count = await syncGuildMembers(msg.guild);
   const total = msg.guild.memberCount || 0;
-  const warn = total && count < total ? `\n⚠️ Bot can currently read **${count}/${total}** members. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+  
+  if (count === 0) {
+    return st.edit([
+      "❌ **Sync failed - 0 members fetched**",
+      "",
+      "**Checklist:**",
+      "1. Go to Discord Developer Portal → Your App → Bot",
+      "2. Enable **SERVER MEMBERS INTENT** under Privileged Gateway Intents",
+      "3. Save changes",
+      "4. Re-invite the bot using a new OAuth2 URL with `bot` and `guilds.members.read` scopes",
+      "5. Try `!syncmembers` again"
+    ].join("\n"));
+  }
+  
+  const warn = total && count < total * 0.9 
+    ? `\n⚠️ Got **${count}/${total}** members. Some may be uncacheable or rate-limited.` 
+    : "";
   return st.edit(`✅ Synced **${count}** members from this server.${warn}`);
 }
 
@@ -374,11 +471,13 @@ if (cmd === "givecredit" || cmd === "givecredits") {
     const status = await msg.channel.send("⏳ Syncing members and giving credits to everyone...");
     await syncGuildMembers(msg.guild);
     const ids = getAllKnownIdsForGuild(msg.guild.id);
-    if (!ids.length) return status.edit("❌ No members found.");
+    if (!ids.length) return status.edit("❌ No members found. Run `!syncmembers` first and check for errors.");
     for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n;
     save();
     const total = msg.guild.memberCount || 0;
-    const warn = total && ids.length < total ? `\n⚠️ Only **${ids.length}/${total}** members were readable by the bot. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+    const warn = total && ids.length < total * 0.9
+      ? `\n⚠️ Only **${ids.length}/${total}** members were synced. Run \`!debug\` for troubleshooting.` 
+      : "";
     return status.edit(`✅ Gave **${n}** credit${n !== 1 ? "s" : ""} to **${ids.length}** users in this server.${warn}`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
@@ -400,7 +499,9 @@ if (cmd === "removecredit" || cmd === "removecredits") {
     for (const id of ids) D.credits[id] = Math.max(0, (D.credits[id] || 0) - n);
     save();
     const total = msg.guild.memberCount || 0;
-    const warn = total && ids.length < total ? `\n⚠️ Only **${ids.length}/${total}** members were readable by the bot. Enable **Server Members Intent** in Discord Developer Portal → Bot.` : "";
+    const warn = total && ids.length < total * 0.9
+      ? `\n⚠️ Only **${ids.length}/${total}** members were readable by the bot.` 
+      : "";
     return status.edit(`✅ Removed **${n}** credit${n !== 1 ? "s" : ""} from **${ids.length}** users in this server.${warn}`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
@@ -600,8 +701,14 @@ bot.on("guildMemberRemove", member => {
 if (BOT_TOKEN) {
   bot.once("ready", async () => {
     console.log(`[BOT] ${bot.user?.tag}`);
+    console.log(`[BOT] AUTH header configured: ${AUTH ? "YES" : "NO"}`);
+    
+    // Auto-sync members on startup
     for (const guild of bot.guilds.cache.values()) {
-      syncGuildMembers(guild).catch(() => {});
+      console.log(`[BOT] Auto-syncing guild: ${guild.name} (${guild.id})`);
+      syncGuildMembers(guild).catch(err => {
+        console.error(`[BOT] Auto-sync failed for ${guild.name}:`, err.message);
+      });
     }
   });
   bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
