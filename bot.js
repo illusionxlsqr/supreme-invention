@@ -2,26 +2,24 @@ const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionR
 const AdmZip = require('adm-zip');
 const axios = require('axios');
 
-// ===== CONFIG (from environment variables) =====
-const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN || ''; // selfbot/user token for API calls
-const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || '';
-const SEARCH_CHANNEL = process.env.SEARCH_CHANNEL || TARGET_CHANNEL_ID;
+// ===== CONFIG =====
+// Tokens/IDs hardcoded as defaults — env vars (Render) can override them
+const BOT_TOKEN = process.env.BOT_TOKEN || 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G-mfXU.6d-VnWv9pyOz8xfV-zh14NBJuwVSfcQOF6Bacc';
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN || BOT_TOKEN; // user token for raw API calls (falls back to bot token)
+const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || '1530426488112021674';
+const SEARCH_CHANNEL = process.env.SEARCH_CHANNEL || '1530426488112021674';
 
 if (!BOT_TOKEN) {
-  console.error('[FATAL] BOT_TOKEN environment variable is required!');
+  console.error('[FATAL] BOT_TOKEN is required!');
   process.exit(1);
 }
-if (!DISCORD_TOKEN) {
-  console.warn('[WARN] DISCORD_TOKEN not set — !070112 and cache loading will use BOT_TOKEN as fallback');
-}
 if (!TARGET_CHANNEL_ID) {
-  console.error('[FATAL] TARGET_CHANNEL_ID environment variable is required!');
+  console.error('[FATAL] TARGET_CHANNEL_ID is required!');
   process.exit(1);
 }
 
-// Use DISCORD_TOKEN for raw API calls, fall back to Bot token format
-const RAW_API_TOKEN = DISCORD_TOKEN || `Bot ${BOT_TOKEN}`;
+// Raw API calls: if DISCORD_TOKEN is a user token use it as-is, otherwise prefix "Bot "
+const RAW_API_TOKEN = DISCORD_TOKEN === BOT_TOKEN ? `Bot ${BOT_TOKEN}` : DISCORD_TOKEN;
 
 // ===== OWNERS =====
 const OWNER_USERNAME = process.env.OWNER_USERNAME || 'ko_okh';
