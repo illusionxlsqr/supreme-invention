@@ -13,21 +13,49 @@ const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377")
 
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const PORT = process.env.PORT || 3000;
-
 const MAX_ZIP_SIZE = 7.5 * 1024 * 1024;
 
-if (!DISCORD_TOKEN) {
-  console.error("[FATAL] DISCORD_TOKEN missing");
-  process.exit(1);
-}
+// ================= HEALTH SERVER (STARTS FIRST) =================
+let ready = false;
+let loginError = null;
 
-// ================= CLIENT =================
-const client = new Client({
-  checkUpdate: false,
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      status: "ok",
+      selfbot: ready ? "connected" : loginError ? "login_failed" : "connecting",
+      error: loginError || undefined,
+      uptime: process.uptime(),
+    })
+  );
 });
 
-let ready = false;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`[HTTP] Healthcheck server listening on port ${PORT}`);
+  startBot();
+});
+
+// ================= CLIENT =================
+const client = new Client({ checkUpdate: false });
 let processing = false;
+
+// ================= START BOT AFTER HTTP =================
+function startBot() {
+  if (!DISCORD_TOKEN) {
+    loginError = "DISCORD_TOKEN missing";
+    console.error("[FATAL] DISCORD_TOKEN missing — bot won't start but healthcheck stays up");
+    return;
+  }
+
+  console.log("Starting SELF BOT ONLY...");
+
+  client.login(DISCORD_TOKEN).catch((err) => {
+    loginError = err?.message || "Unknown login error";
+    console.error("[LOGIN] Selfbot login failed:", loginError);
+    console.error("[LOGIN] Bot is down but healthcheck stays alive for Railway");
+  });
+}
 
 // ================= UTILS =================
 function isOwner(user) {
@@ -54,8 +82,12 @@ async function dl(url) {
   return null;
 }
 
-// Matches both .txt and .html URLs
 const FILE_URL_REGEX = /https?:\/\/[^\s<>"]+\.(?:txt|html?)(?:\?[^\s<>"]*)?/gi;
+
+function isValidExt(name) {
+  const l = name.toLowerCase();
+  return l.endsWith(".txt") || l.endsWith(".html") || l.endsWith(".htm");
+}
 
 function extractFilesFromRaw(raw) {
   const files = [];
@@ -72,31 +104,25 @@ function extractFilesFromRaw(raw) {
         name = "file.txt";
       }
     }
-    const lower = name.toLowerCase();
-    if (!lower.endsWith(".txt") && !lower.endsWith(".html") && !lower.endsWith(".htm")) return;
+    if (!isValidExt(name)) return;
     files.push({ url, name });
   }
 
   for (const att of raw.attachments || []) {
-    const fn = (att.filename || "").toLowerCase();
-    if ((fn.endsWith(".txt") || fn.endsWith(".html") || fn.endsWith(".htm")) && att.url) {
+    if (isValidExt(att.filename || "") && att.url) {
       add(att.url, att.filename);
     }
   }
 
   if (raw.content) {
     const matches = String(raw.content).match(FILE_URL_REGEX);
-    if (matches) {
-      for (const url of matches) add(url);
-    }
+    if (matches) for (const url of matches) add(url);
   }
 
   for (const embed of raw.embeds || []) {
     if (embed.description) {
       const matches = String(embed.description).match(FILE_URL_REGEX);
-      if (matches) {
-        for (const url of matches) add(url);
-      }
+      if (matches) for (const url of matches) add(url);
     }
   }
 
@@ -104,23 +130,18 @@ function extractFilesFromRaw(raw) {
     for (const snap of raw.message_snapshots) {
       const sm = snap.message || snap;
       for (const att of sm.attachments || []) {
-        const fn = (att.filename || "").toLowerCase();
-        if ((fn.endsWith(".txt") || fn.endsWith(".html") || fn.endsWith(".htm")) && att.url) {
+        if (isValidExt(att.filename || "") && att.url) {
           add(att.url, att.filename);
         }
       }
       if (sm.content) {
         const matches = String(sm.content).match(FILE_URL_REGEX);
-        if (matches) {
-          for (const url of matches) add(url);
-        }
+        if (matches) for (const url of matches) add(url);
       }
       for (const embed of sm.embeds || []) {
         if (embed.description) {
           const matches = String(embed.description).match(FILE_URL_REGEX);
-          if (matches) {
-            for (const url of matches) add(url);
-          }
+          if (matches) for (const url of matches) add(url);
         }
       }
     }
@@ -154,7 +175,7 @@ async function fetchRaw(channelId, before) {
   }
 }
 
-// ================= SPLIT ZIP INTO PARTS =================
+// ================= SPLIT ZIP =================
 function buildZipParts(downloadedFiles, channelId) {
   const parts = [];
   let currentZip = new AdmZip();
@@ -374,6 +395,7 @@ async function handleArchive(message, sourceChannelId) {
 // ================= EVENTS =================
 client.on("ready", () => {
   ready = true;
+  loginError = null;
   console.log(`[SELFBOT] Online: ${client.user?.tag}`);
 });
 
@@ -393,28 +415,6 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-// ================= HEALTH SERVER =================
-http
-  .createServer((req, res) => {
-    if (req.url === "/" || req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          status: "ok",
-          type: "selfbot-only",
-          selfbot: ready ? client.user?.tag || "ready" : "connecting",
-          uptime: process.uptime(),
-        })
-      );
-    } else {
-      res.writeHead(404);
-      res.end("Not found");
-    }
-  })
-  .listen(PORT, "0.0.0.0", () => {
-    console.log(`[HTTP] Listening on ${PORT}`);
-  });
-
 // ================= ERRORS =================
 process.on("unhandledRejection", (err) => {
   console.error("[PROCESS] Unhandled rejection:", err);
@@ -422,12 +422,4 @@ process.on("unhandledRejection", (err) => {
 
 process.on("uncaughtException", (err) => {
   console.error("[PROCESS] Uncaught exception:", err);
-});
-
-// ================= START =================
-console.log("Starting SELF BOT ONLY...");
-
-client.login(DISCORD_TOKEN).catch((err) => {
-  console.error("[FATAL] Selfbot login failed:", err?.message || err);
-  process.exit(1);
 });
