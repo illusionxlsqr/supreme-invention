@@ -4,7 +4,6 @@ const AdmZip = require('adm-zip');
 const axios = require('axios');
 
 // ===== CONFIG =====
-const DISCORD_TOKEN = 'ODcyNDI2NDE3MDYzODgyODAz.GPUP-w.b5J1I70ripiCbh8crlvKS6xd9LDRglnNiID3Tw';
 const BOT_TOKEN = 'MTUzMDYwMzAzNTQ3NzE0NzcwOQ.G-mfXU.6d-VnWv9pyOz8xfV-zh14NBJuwVSfcQOF6Bacc';
 const TARGET_CHANNEL_ID = '1530426488112021674';
 const SEARCH_CHANNEL = '1530426488112021674';
