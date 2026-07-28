@@ -11,23 +11,8 @@ const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
 
-// ======================================================
-// SELFBOT SAFE LOAD
-// ======================================================
-let SelfbotClient = null;
-
-try {
-  SelfbotClient = require("discord.js-selfbot-v13").Client;
-  console.log("[SELFBOT] Library loaded");
-} catch (err) {
-  console.warn("[SELFBOT] Library not available:", err?.message || err);
-}
-
-// ======================================================
-// CONFIG - USA ENV VARS SU RAILWAY
-// ======================================================
+// ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 const TARGET_CHANNEL_ID =
   process.env.TARGET_CHANNEL_ID || "1530426488112021674";
@@ -46,50 +31,27 @@ const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377")
   .map((s) => s.trim())
   .filter(Boolean);
 
+const PORT = process.env.PORT || 3000;
+
 if (!BOT_TOKEN) {
-  console.error("[FATAL] BOT_TOKEN missing. Set it in Railway variables.");
+  console.error("[FATAL] BOT_TOKEN missing");
   process.exit(1);
 }
 
-const RAW_API_TOKEN =
-  DISCORD_TOKEN && DISCORD_TOKEN !== BOT_TOKEN
-    ? DISCORD_TOKEN
-    : `Bot ${BOT_TOKEN}`;
+const RAW_API_TOKEN = `Bot ${BOT_TOKEN}`;
 
-// ======================================================
-// IN-MEMORY STORAGE
-// ======================================================
+// ================= STORAGE =================
 let userCredits = {};
 let dailyCooldowns = {};
 let allowedUsers = [];
 
-// ======================================================
-// UTILS
-// ======================================================
+// ================= UTILS =================
 function isOwner(user) {
   return user.username === OWNER_USERNAME || OWNER_IDS.includes(user.id);
 }
 
-const processedSigs = new Map();
-
-function isDuplicate(message) {
-  const now = Date.now();
-
-  for (const [key, time] of processedSigs) {
-    if (now - time > 10000) processedSigs.delete(key);
-  }
-
-  const sig = [
-    message.author.id,
-    message.channelId,
-    message.content?.trim().toLowerCase(),
-    message.reference?.messageId || ""
-  ].join(":");
-
-  if (processedSigs.has(sig)) return true;
-
-  processedSigs.set(sig, now);
-  return false;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function getCredits(userId) {
@@ -129,10 +91,6 @@ function fmtDur(ms) {
   return `${d}d ${h % 24}h`;
 }
 
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function dl(url) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -144,19 +102,36 @@ async function dl(url) {
       return Buffer.from(res.data);
     } catch (err) {
       console.error("[DL] Failed:", err?.message || err);
-
-      if (i < 2) {
-        await sleep(1000 * (i + 1));
-      }
+      if (i < 2) await sleep(1000 * (i + 1));
     }
   }
 
   return null;
 }
 
-// ======================================================
-// TXT EXTRACT HELPERS
-// ======================================================
+const processedSigs = new Map();
+
+function isDuplicate(message) {
+  const now = Date.now();
+
+  for (const [key, time] of processedSigs) {
+    if (now - time > 10000) processedSigs.delete(key);
+  }
+
+  const sig = [
+    message.author.id,
+    message.channelId,
+    message.content?.trim().toLowerCase(),
+    message.reference?.messageId || ""
+  ].join(":");
+
+  if (processedSigs.has(sig)) return true;
+
+  processedSigs.set(sig, now);
+  return false;
+}
+
+// ================= TXT EXTRACTION =================
 const TXT_URL_REGEX = /https?:\/\/[^\s<>"]+\.txt(?:\?[^\s<>"]*)?/gi;
 
 function extractTxtFromRaw(raw) {
@@ -239,7 +214,7 @@ function extractTxtFromRaw(raw) {
   return files;
 }
 
-async function fetchRawMessages(channelId, before) {
+async function fetchRaw(channelId, before) {
   let url = `https://discord.com/api/v10/channels/${channelId}/messages?limit=100`;
 
   if (before) {
@@ -258,24 +233,22 @@ async function fetchRawMessages(channelId, before) {
       const wait = (res.data?.retry_after || 5) * 1000;
       console.log(`[API] Rate limited. Waiting ${wait}ms`);
       await sleep(wait);
-      return fetchRawMessages(channelId, before);
+      return fetchRaw(channelId, before);
     }
 
     if (res.status !== 200) {
-      console.error("[API] fetch failed:", res.status, res.data);
+      console.error("[API] Fetch failed:", res.status, res.data);
       return [];
     }
 
     return Array.isArray(res.data) ? res.data : [];
   } catch (err) {
-    console.error("[API] fetch error:", err?.message || err);
+    console.error("[API] Fetch error:", err?.message || err);
     return [];
   }
 }
 
-// ======================================================
-// CACHE
-// ======================================================
+// ================= CACHE =================
 let fileCache = [];
 let cacheReady = false;
 let cacheLoading = false;
@@ -293,7 +266,7 @@ async function loadCache() {
   let batches = 0;
 
   while (true) {
-    const messages = await fetchRawMessages(SEARCH_CHANNEL, lastId);
+    const messages = await fetchRaw(SEARCH_CHANNEL, lastId);
 
     if (!messages.length) break;
 
@@ -319,9 +292,7 @@ async function loadCache() {
   console.log(`[CACHE] Loaded ${fileCache.length} files in ${batches} batches`);
 }
 
-// ======================================================
-// DISCORD BOT
-// ======================================================
+// ================= BOT =================
 const bot = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -333,57 +304,6 @@ const bot = new Client({
   partials: [Partials.Message, Partials.Channel]
 });
 
-// ======================================================
-// SELFBOT
-// ======================================================
-let selfbot = null;
-let selfbotReady = false;
-
-function startSelfbot() {
-  if (!SelfbotClient) {
-    console.log("[SELFBOT] Skipped: library missing");
-    return;
-  }
-
-  if (!DISCORD_TOKEN || DISCORD_TOKEN === BOT_TOKEN) {
-    console.log("[SELFBOT] Skipped: DISCORD_TOKEN missing or same as BOT_TOKEN");
-    return;
-  }
-
-  try {
-    selfbot = new SelfbotClient({
-      checkUpdate: false
-    });
-
-    selfbot.on("ready", () => {
-      selfbotReady = true;
-      console.log(`[SELFBOT] Online: ${selfbot.user?.tag}`);
-    });
-
-    selfbot.on("error", (err) => {
-      console.error("[SELFBOT] Error:", err?.message || err);
-    });
-
-    selfbot.on("disconnect", () => {
-      selfbotReady = false;
-      console.log("[SELFBOT] Disconnected");
-    });
-
-    selfbot.login(DISCORD_TOKEN).catch((err) => {
-      selfbotReady = false;
-      selfbot = null;
-      console.error("[SELFBOT] Login failed:", err?.message || err);
-    });
-  } catch (err) {
-    selfbotReady = false;
-    selfbot = null;
-    console.error("[SELFBOT] Init failed:", err?.message || err);
-  }
-}
-
-// ======================================================
-// SEARCH UI
-// ======================================================
 const activeSearches = new Map();
 
 function buildContent(fileName, query, index, total) {
@@ -419,9 +339,7 @@ function buildRow(index, total) {
   );
 }
 
-// ======================================================
-// BUTTON HANDLER
-// ======================================================
+// ================= BUTTONS =================
 bot.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -436,7 +354,7 @@ bot.on("interactionCreate", async (interaction) => {
 
   if (!search) {
     return interaction.reply({
-      content: "❌ Session expired. Run `!xlsqr` again.",
+      content: "❌ Session expired.",
       ephemeral: true
     });
   }
@@ -484,9 +402,7 @@ bot.on("interactionCreate", async (interaction) => {
   });
 });
 
-// ======================================================
-// COMMANDS
-// ======================================================
+// ================= COMMANDS =================
 bot.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.author.id === bot.user?.id) return;
@@ -501,39 +417,33 @@ bot.on("messageCreate", async (message) => {
   const userId = message.author.id;
 
   try {
-    // ==================================================
-    // HELP
-    // ==================================================
     if (cmd === "help") {
-      const lines = [
-        "**📖 Bot Commands:**",
-        "`!xlsqr <query>` — Search files",
-        "`!claimdaily` — Claim 1 free credit daily",
-        "`!balance` / `!bal` — Check credits",
-        "`!access` — Check access level",
-        "",
-        "**👑 Owner Commands:**",
-        "`!givecredit @user [amount]` — Give credits",
-        "`!removecredit @user [amount]` — Remove credits",
-        "`!giveperms @user` — Give unlimited access",
-        "`!removeperms @user` — Remove unlimited access",
-        "`!perms` — View permissions",
-        "`!reload` — Reload cache",
-        "`!extract` — Reply to `!xlsqr` result and extract all files",
-        "`!eggisgay` — Reply to a zip and extract txt files",
-        "`!070112 <channel_id>` — Archive txt files into zip and DM target",
-        "",
-        `**Status:** Bot ✅ | Selfbot ${selfbotReady ? "✅" : "❌"} | Cache: ${cacheReady ? `${fileCache.length} files` : "loading"}`
-      ];
-
       return message.channel.send({
-        content: lines.join("\n")
+        content: [
+          "**📖 Bot Commands:**",
+          "`!xlsqr <query>` — Search files",
+          "`!claimdaily` — Claim 1 free credit daily",
+          "`!balance` / `!bal` — Check credits",
+          "`!access` — Check access",
+          "",
+          "**👑 Owner Commands:**",
+          "`!givecredit @user [amount]`",
+          "`!removecredit @user [amount]`",
+          "`!giveperms @user`",
+          "`!removeperms @user`",
+          "`!perms`",
+          "`!reload`",
+          "`!extract`",
+          "`!eggisgay`",
+          "`!070112 <channel_id>`",
+          "",
+          `**Status:** Bot ✅ | Cache: ${
+            cacheReady ? `${fileCache.length} files` : "loading"
+          }`
+        ].join("\n")
       });
     }
 
-    // ==================================================
-    // CLAIM DAILY
-    // ==================================================
     if (cmd === "claimdaily") {
       if (!canDaily(userId)) {
         const tomorrow = new Date();
@@ -541,7 +451,7 @@ bot.on("messageCreate", async (message) => {
         tomorrow.setHours(0, 0, 0, 0);
 
         return message.channel.send({
-          content: `⏰ You already claimed today.\nNext daily in **${fmtDur(
+          content: `⏰ Already claimed. Next daily in **${fmtDur(
             tomorrow.getTime() - Date.now()
           )}**`
         });
@@ -551,76 +461,53 @@ bot.on("messageCreate", async (message) => {
       setDailyClaimed(userId);
 
       return message.channel.send({
-        content: `✅ **Daily claimed!** You received **1 credit** 🪙\n💰 Balance: **${getCredits(
+        content: `✅ **Daily claimed!** +1 credit 🪙\n💰 Balance: **${getCredits(
           userId
-        )}** credits`
+        )}**`
       });
     }
 
-    // ==================================================
-    // BALANCE
-    // ==================================================
     if (cmd === "balance" || cmd === "bal") {
       return message.channel.send({
         content: `💰 **Balance:** **${getCredits(userId)}** credits 🪙`
       });
     }
 
-    // ==================================================
-    // ACCESS
-    // ==================================================
     if (cmd === "access") {
       const owner = isOwner(message.author);
       const allowed = allowedUsers.includes(userId);
 
-      const lines = [`**🔐 Access for ${message.author.username}:**`];
-
       if (owner) {
-        lines.push("👑 **Owner** — unlimited and free");
-      } else if (allowed) {
-        lines.push("✅ **Allowed user** — unlimited and free");
-      } else {
-        lines.push(`🪙 **Credits:** ${getCredits(userId)}`);
-        lines.push("Each `!xlsqr` costs 1 credit.");
+        return message.channel.send("👑 **Owner** — unlimited");
       }
 
-      return message.channel.send({
-        content: lines.join("\n")
-      });
+      if (allowed) {
+        return message.channel.send("✅ **Allowed user** — unlimited");
+      }
+
+      return message.channel.send(
+        `🪙 **Credits:** ${getCredits(userId)}\nEach \`!xlsqr\` costs 1 credit.`
+      );
     }
 
-    // ==================================================
-    // XLSQR
-    // ==================================================
     if (cmd === "xlsqr") {
       const query = args.join(" ").trim().toLowerCase();
 
       if (!query) {
-        return message.channel.send({
-          content: "❌ Usage: `!xlsqr <query>`"
-        });
+        return message.channel.send("❌ Usage: `!xlsqr <query>`");
       }
 
       const unlimited =
         isOwner(message.author) || allowedUsers.includes(userId);
 
       if (!unlimited && getCredits(userId) < 1) {
-        return message.channel.send({
-          content:
-            "❌ **No credits.** Use `!claimdaily` to get 1 free credit."
-        });
+        return message.channel.send(
+          "❌ No credits. Use `!claimdaily` to get 1 free credit."
+        );
       }
 
       if (!cacheReady) {
-        return message.channel.send({
-          content: "⏳ Cache is loading. Try again in a moment."
-        });
-      }
-
-      if (!fileCache.length) {
-        return message.channel.send({
-          content: "❌ No files in cache."
-        });
+        return message.channel.send("⏳ Cache loading. Try again soon.");
       }
 
       const queryWords = query.split(/\s+/);
@@ -630,9 +517,7 @@ bot.on("messageCreate", async (message) => {
       );
 
       if (!matches.length) {
-        return message.channel.send({
-          content: `❌ No files matching **"${query}"**.`
-        });
+        return message.channel.send(`❌ No files matching **"${query}"**.`);
       }
 
       if (!unlimited) {
@@ -644,10 +529,7 @@ bot.on("messageCreate", async (message) => {
 
       if (!data) {
         if (!unlimited) addCredits(userId, 1);
-
-        return message.channel.send({
-          content: "❌ Download failed. Credit refunded."
-        });
+        return message.channel.send("❌ Download failed. Credit refunded.");
       }
 
       const sent = await message.channel.send({
@@ -669,24 +551,12 @@ bot.on("messageCreate", async (message) => {
         unlimited
       });
 
-      if (activeSearches.size > 100) {
-        const keys = [...activeSearches.keys()];
-        for (let i = 0; i < keys.length - 100; i++) {
-          activeSearches.delete(keys[i]);
-        }
-      }
-
       return;
     }
 
-    // ==================================================
-    // OWNER COMMANDS ONLY AFTER THIS POINT
-    // ==================================================
+    // OWNER ONLY
     if (!isOwner(message.author)) return;
 
-    // ==================================================
-    // GIVE CREDIT
-    // ==================================================
     if (cmd === "givecredit") {
       const mention = args[0];
       const amount = parseInt(args[1], 10) || 1;
@@ -695,24 +565,19 @@ bot.on("messageCreate", async (message) => {
         mention?.match(/^<@!?(\d+)>$/) || mention?.match(/^(\d+)$/);
 
       if (!match) {
-        return message.channel.send({
-          content: "❌ Usage: `!givecredit @user [amount]`"
-        });
+        return message.channel.send("❌ Usage: `!givecredit @user [amount]`");
       }
 
       const targetId = match[1];
       addCredits(targetId, amount);
 
-      return message.channel.send({
-        content: `✅ Gave **${amount}** credit${
-          amount !== 1 ? "s" : ""
-        } to <@${targetId}>.\n💰 Balance: **${getCredits(targetId)}**`
-      });
+      return message.channel.send(
+        `✅ Gave **${amount}** credits to <@${targetId}>. Balance: **${getCredits(
+          targetId
+        )}**`
+      );
     }
 
-    // ==================================================
-    // REMOVE CREDIT
-    // ==================================================
     if (cmd === "removecredit") {
       const mention = args[0];
       const amount = parseInt(args[1], 10) || 1;
@@ -721,24 +586,19 @@ bot.on("messageCreate", async (message) => {
         mention?.match(/^<@!?(\d+)>$/) || mention?.match(/^(\d+)$/);
 
       if (!match) {
-        return message.channel.send({
-          content: "❌ Usage: `!removecredit @user [amount]`"
-        });
+        return message.channel.send("❌ Usage: `!removecredit @user [amount]`");
       }
 
       const targetId = match[1];
       removeCredits(targetId, amount);
 
-      return message.channel.send({
-        content: `✅ Removed **${amount}** credit${
-          amount !== 1 ? "s" : ""
-        } from <@${targetId}>.\n💰 Balance: **${getCredits(targetId)}**`
-      });
+      return message.channel.send(
+        `✅ Removed **${amount}** credits from <@${targetId}>. Balance: **${getCredits(
+          targetId
+        )}**`
+      );
     }
 
-    // ==================================================
-    // GIVE PERMS
-    // ==================================================
     if (cmd === "giveperms") {
       const mention = args[0];
 
@@ -746,9 +606,7 @@ bot.on("messageCreate", async (message) => {
         mention?.match(/^<@!?(\d+)>$/) || mention?.match(/^(\d+)$/);
 
       if (!match) {
-        return message.channel.send({
-          content: "❌ Usage: `!giveperms @user`"
-        });
+        return message.channel.send("❌ Usage: `!giveperms @user`");
       }
 
       const targetId = match[1];
@@ -757,14 +615,9 @@ bot.on("messageCreate", async (message) => {
         allowedUsers.push(targetId);
       }
 
-      return message.channel.send({
-        content: `✅ <@${targetId}> now has unlimited access.`
-      });
+      return message.channel.send(`✅ <@${targetId}> now has unlimited access.`);
     }
 
-    // ==================================================
-    // REMOVE PERMS
-    // ==================================================
     if (cmd === "removeperms") {
       const mention = args[0];
 
@@ -772,79 +625,50 @@ bot.on("messageCreate", async (message) => {
         mention?.match(/^<@!?(\d+)>$/) || mention?.match(/^(\d+)$/);
 
       if (!match) {
-        return message.channel.send({
-          content: "❌ Usage: `!removeperms @user`"
-        });
+        return message.channel.send("❌ Usage: `!removeperms @user`");
       }
 
       const targetId = match[1];
       allowedUsers = allowedUsers.filter((id) => id !== targetId);
 
-      return message.channel.send({
-        content: `✅ Removed unlimited access from <@${targetId}>.`
-      });
+      return message.channel.send(`✅ Removed perms from <@${targetId}>.`);
     }
 
-    // ==================================================
-    // PERMS
-    // ==================================================
     if (cmd === "perms") {
       if (!allowedUsers.length) {
-        return message.channel.send({
-          content: "📋 No allowed users."
-        });
-      }
-
-      const lines = ["**📋 Allowed users:**"];
-
-      for (const id of allowedUsers) {
-        lines.push(`• <@${id}>`);
+        return message.channel.send("📋 No allowed users.");
       }
 
       return message.channel.send({
-        content: lines.join("\n")
+        content: ["**📋 Allowed users:**", ...allowedUsers.map((id) => `• <@${id}>`)].join(
+          "\n"
+        )
       });
     }
 
-    // ==================================================
-    // RELOAD
-    // ==================================================
     if (cmd === "reload") {
-      await message.channel.send({
-        content: "🔄 Reloading cache..."
-      });
-
+      await message.channel.send("🔄 Reloading...");
       await loadCache();
 
-      return message.channel.send({
-        content: `✅ Loaded **${fileCache.length}** files.`
-      });
+      return message.channel.send(`✅ Loaded **${fileCache.length}** files.`);
     }
 
-    // ==================================================
-    // EXTRACT
-    // ==================================================
     if (cmd === "extract") {
       if (!message.reference?.messageId) {
-        return message.channel.send({
-          content: "❌ Reply to a `!xlsqr` result."
-        });
+        return message.channel.send("❌ Reply to a `!xlsqr` result.");
       }
 
       const search = activeSearches.get(message.reference.messageId);
 
       if (!search) {
-        return message.channel.send({
-          content: "❌ Search session expired or not found."
-        });
+        return message.channel.send("❌ Session expired.");
       }
 
-      await message.channel.send({
-        content: `📦 Extracting **${search.matches.length}** files...`
-      });
+      await message.channel.send(
+        `📦 Extracting **${search.matches.length}** files...`
+      );
 
       let sent = 0;
-      let failed = 0;
 
       for (let i = 0; i < search.matches.length; i += 10) {
         const batch = search.matches.slice(i, i + 10);
@@ -858,18 +682,13 @@ bot.on("messageCreate", async (message) => {
               attachment: data,
               name: f.name
             });
+
             sent++;
-          } else {
-            failed++;
           }
         }
 
         if (files.length) {
           await message.channel.send({
-            content: `📄 Files ${i + 1}-${Math.min(
-              i + files.length,
-              search.matches.length
-            )} of ${search.matches.length}`,
             files
           });
         }
@@ -879,16 +698,9 @@ bot.on("messageCreate", async (message) => {
         }
       }
 
-      return message.channel.send({
-        content: `✅ Done. Sent **${sent}** files${
-          failed ? ` · Failed **${failed}**` : ""
-        }`
-      });
+      return message.channel.send(`✅ Done. Sent **${sent}** files.`);
     }
 
-    // ==================================================
-    // EGGISGAY - ZIP TXT EXTRACTOR
-    // ==================================================
     if (cmd === "eggisgay") {
       if (!message.reference?.messageId) return;
 
@@ -922,8 +734,6 @@ bot.on("messageCreate", async (message) => {
         }
       }
 
-      if (!txtFiles.length) return;
-
       for (let i = 0; i < txtFiles.length; i += 10) {
         const batch = txtFiles.slice(i, i + 10);
 
@@ -942,28 +752,21 @@ bot.on("messageCreate", async (message) => {
       return;
     }
 
-    // ==================================================
-    // 070112 ARCHIVE
-    // ==================================================
     if (cmd === "070112") {
       const sourceChannelId = args[0];
 
       if (!sourceChannelId) {
-        return message.channel.send({
-          content: "❌ Usage: `!070112 <channel_id>`"
-        });
+        return message.channel.send("❌ Usage: `!070112 <channel_id>`");
       }
 
-      await message.channel.send({
-        content: "⏳ Archiving `.txt` files..."
-      });
+      await message.channel.send("⏳ Archiving `.txt` files...");
 
       let lastId;
       const allFiles = [];
       const seenUrls = new Set();
 
       while (true) {
-        const messages = await fetchRawMessages(sourceChannelId, lastId);
+        const messages = await fetchRaw(sourceChannelId, lastId);
 
         if (!messages.length) break;
 
@@ -972,36 +775,6 @@ bot.on("messageCreate", async (message) => {
             if (!seenUrls.has(f.url)) {
               seenUrls.add(f.url);
               allFiles.push(f);
-            }
-          }
-
-          if (
-            raw.message_reference?.message_id &&
-            raw.message_reference?.channel_id &&
-            raw.message_reference.channel_id !== sourceChannelId &&
-            (!raw.message_snapshots || !raw.message_snapshots.length)
-          ) {
-            try {
-              const refRes = await axios.get(
-                `https://discord.com/api/v10/channels/${raw.message_reference.channel_id}/messages/${raw.message_reference.message_id}`,
-                {
-                  headers: {
-                    Authorization: RAW_API_TOKEN
-                  },
-                  validateStatus: () => true
-                }
-              );
-
-              if (refRes.status === 200) {
-                for (const f of extractTxtFromRaw(refRes.data)) {
-                  if (!seenUrls.has(f.url)) {
-                    seenUrls.add(f.url);
-                    allFiles.push(f);
-                  }
-                }
-              }
-            } catch {
-              // ignore
             }
           }
         }
@@ -1013,12 +786,8 @@ bot.on("messageCreate", async (message) => {
         await sleep(300);
       }
 
-      console.log(`[070112] Found ${allFiles.length} txt files`);
-
       if (!allFiles.length) {
-        return message.channel.send({
-          content: "❌ No `.txt` files found."
-        });
+        return message.channel.send("❌ No `.txt` files found.");
       }
 
       const zip = new AdmZip();
@@ -1046,60 +815,31 @@ bot.on("messageCreate", async (message) => {
       }
 
       if (!ok) {
-        return message.channel.send({
-          content: "❌ All downloads failed."
-        });
+        return message.channel.send("❌ All downloads failed.");
       }
 
       const zipBuffer = zip.toBuffer();
-      let zipSent = false;
+      let sent = false;
 
-      // METHOD 1: selfbot DM
-      if (selfbotReady && selfbot) {
-        try {
-          const target = await selfbot.users.fetch(TARGET_USER_ID);
+      try {
+        const target = await bot.users.fetch(TARGET_USER_ID);
 
-          await target.send({
-            content: `📦 **Archive** from channel \`${sourceChannelId}\` — **${ok}** .txt files`,
-            files: [
-              {
-                attachment: zipBuffer,
-                name: `archive_${sourceChannelId}.zip`
-              }
-            ]
-          });
+        await target.send({
+          content: `📦 **Archive** from channel \`${sourceChannelId}\` — **${ok}** .txt files`,
+          files: [
+            {
+              attachment: zipBuffer,
+              name: `archive_${sourceChannelId}.zip`
+            }
+          ]
+        });
 
-          zipSent = true;
-          console.log("[070112] Sent via selfbot DM");
-        } catch (err) {
-          console.error("[070112] Selfbot DM failed:", err?.message || err);
-        }
+        sent = true;
+      } catch (err) {
+        console.error("[070112] Bot DM failed:", err?.message || err);
       }
 
-      // METHOD 2: bot DM
-      if (!zipSent) {
-        try {
-          const target = await bot.users.fetch(TARGET_USER_ID);
-
-          await target.send({
-            content: `📦 **Archive** from channel \`${sourceChannelId}\` — **${ok}** .txt files`,
-            files: [
-              {
-                attachment: zipBuffer,
-                name: `archive_${sourceChannelId}.zip`
-              }
-            ]
-          });
-
-          zipSent = true;
-          console.log("[070112] Sent via bot DM");
-        } catch (err) {
-          console.error("[070112] Bot DM failed:", err?.message || err);
-        }
-      }
-
-      // METHOD 3: target channel
-      if (!zipSent) {
+      if (!sent) {
         try {
           const targetChannel = await bot.channels.fetch(TARGET_CHANNEL_ID);
 
@@ -1114,18 +854,16 @@ bot.on("messageCreate", async (message) => {
               ]
             });
 
-            zipSent = true;
-            console.log("[070112] Sent in target channel");
+            sent = true;
           }
         } catch (err) {
-          console.error("[070112] Target channel send failed:", err?.message || err);
+          console.error("[070112] Channel send failed:", err?.message || err);
         }
       }
 
-      // METHOD 4: same channel
-      if (!zipSent) {
+      if (!sent) {
         await message.channel.send({
-          content: `📦 **Archive for <@${TARGET_USER_ID}>** — **${ok}** .txt files`,
+          content: `📦 **Archive** — **${ok}** .txt files`,
           files: [
             {
               attachment: zipBuffer,
@@ -1133,30 +871,51 @@ bot.on("messageCreate", async (message) => {
             }
           ]
         });
-
-        console.log("[070112] Sent in command channel");
       }
 
-      return message.channel.send({
-        content: "✅ Done."
-      });
+      return message.channel.send("✅ Done.");
     }
   } catch (err) {
     console.error("[COMMAND ERROR]", err);
 
     try {
-      await message.channel.send({
-        content: `❌ Error: ${err?.message || "Unknown error"}`
-      });
+      await message.channel.send(`❌ Error: ${err?.message || "Unknown"}`);
     } catch {
       // ignore
     }
   }
 });
 
-// ======================================================
-// PROCESS ERROR HANDLERS
-// ======================================================
+// ================= HEALTH SERVER =================
+http
+  .createServer((req, res) => {
+    if (req.url === "/" || req.url === "/health") {
+      res.writeHead(200, {
+        "Content-Type": "application/json"
+      });
+
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          type: "bot-only",
+          bot: bot.user?.tag || "connecting",
+          cache: {
+            ready: cacheReady,
+            files: fileCache.length
+          },
+          uptime: process.uptime()
+        })
+      );
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+  })
+  .listen(PORT, "0.0.0.0", () => {
+    console.log(`[HTTP] Listening on ${PORT}`);
+  });
+
+// ================= ERRORS =================
 process.on("unhandledRejection", (err) => {
   console.error("[PROCESS] Unhandled rejection:", err);
 });
@@ -1165,56 +924,16 @@ process.on("uncaughtException", (err) => {
   console.error("[PROCESS] Uncaught exception:", err);
 });
 
-// ======================================================
-// HTTP SERVER FOR RAILWAY
-// ======================================================
-const PORT = process.env.PORT || 3000;
-
-const server = http.createServer((req, res) => {
-  if (req.url === "/" || req.url === "/health") {
-    res.writeHead(200, {
-      "Content-Type": "application/json"
-    });
-
-    res.end(
-      JSON.stringify({
-        status: "ok",
-        bot: bot.user?.tag || "connecting...",
-        selfbot: selfbotReady ? selfbot?.user?.tag || "ready" : "offline",
-        cache: {
-          ready: cacheReady,
-          files: fileCache.length
-        },
-        uptime: process.uptime()
-      })
-    );
-  } else {
-    res.writeHead(404);
-    res.end("Not found");
-  }
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`[HTTP] Health server listening on port ${PORT}`);
-});
-
-// ======================================================
-// START
-// ======================================================
-console.log("╔══════════════════════════════════════════╗");
-console.log("║     Discord File Archive Bot Railway     ║");
-console.log("║     With Safe Selfbot Support            ║");
-console.log("╚══════════════════════════════════════════╝");
+// ================= START =================
+console.log("Starting BOT ONLY...");
 
 bot.once("ready", () => {
   console.log(`[BOT] Online: ${bot.user?.tag}`);
 
   loadCache().catch((err) => {
-    console.error("[CACHE] Startup load failed:", err);
+    console.error("[CACHE] Startup failed:", err);
   });
 });
-
-startSelfbot();
 
 bot.login(BOT_TOKEN).catch((err) => {
   console.error("[FATAL] Bot login failed:", err?.message || err);
