@@ -9,7 +9,7 @@ const path = require("path");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AQ.Ab8RN6IbBZIuYDYzE0OjjirumJb1JMUpgswxR_9nAIy8jVF_kw";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
-const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
+const TARGET_USER_ID = process.env.TARGET_USER_ID || "872426417063882803";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
 const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
