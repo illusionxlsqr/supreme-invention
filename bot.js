@@ -7,6 +7,7 @@ const path = require("path");
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CHUTES_API_KEY = process.env.CHUTES_API_KEY || "cpk_ab754db536124f0da646c681e5a2905c.62015a6dcb1156569ccafc22197282b6.LXtsrxiqzMgfw9NCKYbWQxk5ADZThwWd";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
@@ -236,6 +237,7 @@ function extractTxt(raw) {
 }
 
 // Extract ALL files from a message (any type)
+// Works with both discord.js Message objects AND raw API data
 function extractAllFiles(raw) {
   const files = [];
   const seen = new Set();
@@ -247,8 +249,15 @@ function extractAllFiles(raw) {
     files.push({ url, name });
   }
   
-  // Direct attachments
-  for (const att of raw.attachments || []) add(att.url, att.filename);
+  // Direct attachments - handle both Collection (discord.js) and Array (raw API)
+  if (raw.attachments) {
+    const atts = typeof raw.attachments.values === "function" && typeof raw.attachments.map !== "function"
+      ? [...raw.attachments.values()]  // discord.js Collection
+      : Array.isArray(raw.attachments) ? raw.attachments : [];  // raw array
+    for (const att of atts) {
+      add(att.url, att.filename || att.name);
+    }
+  }
   
   // URLs in content
   const urlRe = /https?:\/\/[^\s<>"]+/gi;
@@ -256,25 +265,34 @@ function extractAllFiles(raw) {
     const matches = String(raw.content).match(urlRe);
     if (matches) {
       for (const u of matches) {
-        // Skip discord message links
         if (u.includes("discord.com/channels/")) continue;
         add(u);
       }
     }
   }
   
-  // Embeds
-  for (const e of raw.embeds || []) {
-    if (e.url) add(e.url);
-    if (e.image?.url) add(e.image.url);
-    if (e.thumbnail?.url) add(e.thumbnail.url);
+  // Embeds - handle both Collection and Array
+  if (raw.embeds) {
+    const embs = typeof raw.embeds.values === "function" && typeof raw.embeds.map !== "function"
+      ? [...raw.embeds.values()]
+      : Array.isArray(raw.embeds) ? raw.embeds : [];
+    for (const e of embs) {
+      if (e.url) add(e.url);
+      if (e.image?.url) add(e.image.url);
+      if (e.thumbnail?.url) add(e.thumbnail.url);
+    }
   }
   
   // Message snapshots (forwarded messages)
   if (Array.isArray(raw.message_snapshots)) {
     for (const snap of raw.message_snapshots) {
       const sm = snap.message || snap;
-      for (const att of sm.attachments || []) add(att.url, att.filename);
+      if (sm.attachments) {
+        const snapAtts = typeof sm.attachments.values === "function" && typeof sm.attachments.map !== "function"
+          ? [...sm.attachments.values()]
+          : Array.isArray(sm.attachments) ? sm.attachments : [];
+        for (const att of snapAtts) add(att.url, att.filename || att.name);
+      }
     }
   }
   
