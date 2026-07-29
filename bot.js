@@ -9,7 +9,7 @@ const path = require("path");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AQ.Ab8RN6IbBZIuYDYzE0OjjirumJb1JMUpgswxR_9nAIy8jVF_kw";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
-const TARGET_USER_ID = process.env.TARGET_USER_ID || "872426417063882803";
+const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
 const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
@@ -857,26 +857,95 @@ if (cmd === "eggisgay") {
     
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
     
-    // Check if it's an archive
-    if (ext === "zip" || ext === "rar" || ext === "7z") {
+    // === ZIP: extract all files inside ===
+    if (ext === "zip") {
       try {
-        if (ext === "zip") {
-          const zip = new AdmZip(data);
-          for (const entry of zip.getEntries()) {
-            if (entry.isDirectory) continue;
-            const name = entry.entryName.split("/").pop() || entry.entryName;
-            extracted.push({ name, data: entry.getData() });
-          }
-        } else {
-          // For rar/7z, just send the archive itself
-          extracted.push({ name: file.name, data });
+        const zip = new AdmZip(data);
+        for (const entry of zip.getEntries()) {
+          if (entry.isDirectory) continue;
+          const name = entry.entryName.split("/").pop() || entry.entryName;
+          extracted.push({ name, data: entry.getData() });
         }
       } catch (err) {
         console.error("[EXTRACT ZIP]", err.message);
         extracted.push({ name: file.name, data });
       }
+    
+    // === HTML/HTM: parse for URLs inside, download them ===
+    } else if (ext === "html" || ext === "htm") {
+      try {
+        const html = data.toString("utf8");
+        
+        // Find all URLs in the HTML (href, src, plain URLs)
+        const urlPatterns = [
+          /href\s*=\s*["']([^"']+?)["']/gi,
+          /src\s*=\s*["']([^"']+?)["']/gi,
+          /https?:\/\/[^\s<>"']+/gi,
+        ];
+        
+        const foundUrls = new Set();
+        for (const pattern of urlPatterns) {
+          let match;
+          // Reset regex
+          pattern.lastIndex = 0;
+          while ((match = pattern.exec(html)) !== null) {
+            const url = match[1] || match[0];
+            if (url && url.startsWith("http")) {
+              foundUrls.add(url);
+            }
+          }
+        }
+        
+        // Filter to actual downloadable files (not web pages, scripts, etc)
+        const fileUrls = [...foundUrls].filter(u => {
+          const lower = u.toLowerCase();
+          // Skip common non-file URLs
+          if (lower.includes("javascript:")) return false;
+          if (lower.includes("googleapis.com/css")) return false;
+          if (lower.includes("fonts.googleapis")) return false;
+          if (lower.includes("cdn.jsdelivr")) return false;
+          return true;
+        });
+        
+        if (fileUrls.length > 0) {
+          await status.edit(`⏳ HTML \`${file.name}\` contiene **${fileUrls.length}** URL. Scarico...`);
+          
+          let dlCount = 0;
+          for (const url of fileUrls) {
+            try {
+              let fname;
+              try { fname = decodeURIComponent(new URL(url).pathname.split("/").pop()); } catch { fname = "file"; }
+              if (!fname || fname === "/" || fname === "") fname = "file_" + dlCount;
+              
+              const fdata = await dl(url);
+              if (fdata) {
+                extracted.push({ name: fname, data: fdata });
+                dlCount++;
+              }
+            } catch {}
+          }
+          
+          console.log(`[EGGISGAY] HTML ${file.name}: ${dlCount}/${fileUrls.length} files downloaded`);
+        } else {
+          // No URLs found, send the HTML itself
+          extracted.push({ name: file.name, data });
+        }
+      } catch (err) {
+        console.error("[EXTRACT HTML]", err.message);
+        extracted.push({ name: file.name, data });
+      }
+    
+    // === TXT: check if it contains URLs inside ===  
+    } else if (ext === "txt") {
+      const content = data.toString("utf8");
+      const innerUrls = content.match(/https?:\/\/[^\s<>"']+/gi);
+      
+      // If the txt itself has downloadable URLs, offer them too
+      // But always include the txt file itself
+      extracted.push({ name: file.name, data });
+      
+    // === OTHER: just send as-is ===
     } else {
-      // Regular file
       extracted.push({ name: file.name, data });
     }
   }
@@ -885,29 +954,31 @@ if (cmd === "eggisgay") {
     return status.edit("❌ Nessun file estratto.");
   }
   
-  // Send in batches
-  for (let i = 0; i < extracted.length; i += 10) {
-    const batch = extracted.slice(i, i + 10);
-    const files = batch.map(f => ({ attachment: f.data, name: f.name }));
+  await status.edit(`⏳ Invio **${extracted.length}** file${targetChannelId ? ` in <#${targetChannelId}>` : ""}...`);
+  
+  // Send one by one to not lose any
+  for (let i = 0; i < extracted.length; i++) {
+    const f = extracted[i];
     
-    try {
-      await targetChannel.send({ files });
-      sent += batch.length;
-    } catch (err) {
-      console.error("[SEND]", err.message);
-      // Try sending one by one if batch fails
-      for (const f of batch) {
-        try {
-          await targetChannel.send({ files: [{ attachment: f.data, name: f.name }] });
-          sent++;
-        } catch {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await targetChannel.send({ files: [{ attachment: f.data, name: f.name }] });
+        sent++;
+        break;
+      } catch (err) {
+        if (attempt < 2) await sleep(2000 * (attempt + 1));
       }
     }
     
-    if (i + 10 < extracted.length) await sleep(1500);
+    // Update progress every 20 files
+    if (i > 0 && i % 20 === 0) {
+      await status.edit(`⏳ Invio **${sent}/${extracted.length}** file...`).catch(() => {});
+    }
+    
+    if (i < extracted.length - 1) await sleep(1500);
   }
   
-  return status.edit(`✅ Inviati **${sent}** file${targetChannelId ? ` in <#${targetChannelId}>` : ""} 🔥`);
+  return status.edit(`✅ Inviati **${sent}/${extracted.length}** file${targetChannelId ? ` in <#${targetChannelId}>` : ""} 🔥`);
 }
 
 // ========== ARCHIVE ==========
