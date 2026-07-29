@@ -7,7 +7,6 @@ const path = require("path");
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CHUTES_API_KEY = process.env.CHUTES_API_KEY || "cpk_ab754db536124f0da646c681e5a2905c.62015a6dcb1156569ccafc22197282b6.LXtsrxiqzMgfw9NCKYbWQxk5ADZThwWd";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
@@ -485,11 +484,11 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
   try {
     // Chutes.ai endpoint and model
     const endpoint = useChutes 
-      ? "https://llm.chutes.ai/v1/chat/completions"
+      ? "https://api.chutes.ai/v1/chat/completions"
       : "https://api.openai.com/v1/chat/completions";
     
     const model = useChutes 
-      ? "deepseek-ai/DeepSeek-V3-0324"  // Good free model on Chutes
+      ? "deepseek-ai/DeepSeek-R1"
       : "gpt-4o-mini";
     
     const res = await axios.post(endpoint, {
@@ -505,7 +504,11 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
       timeout: 120000
     });
     
-    const reply = res.data.choices[0]?.message?.content || "❌ Nessuna risposta";
+    let reply = res.data.choices[0]?.message?.content || "❌ Nessuna risposta";
+    
+    // Strip <think>...</think> tags from DeepSeek-R1 reasoning
+    reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    if (!reply) reply = "🤔 (Il modello ha pensato ma non ha risposto, riprova)";
     
     // Save to history
     D.conversations[userId].push({ role: "user", content: question });
@@ -515,8 +518,14 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
     
     return reply;
   } catch (err) {
-    console.error("[AI]", err.response?.data || err.message);
-    return `❌ Errore AI: ${err.response?.data?.error?.message || err.message}`;
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.response?.data?.detail || err.message;
+    console.error(`[AI] Status: ${status}`, err.response?.data || err.message);
+    
+    if (status === 404) return "❌ Modello AI non trovato. Controlla la configurazione.";
+    if (status === 401) return "❌ API key non valida.";
+    if (status === 429) return "❌ Troppi richieste, aspetta un po' e riprova.";
+    return `❌ Errore AI (${status || "?"}): ${errMsg}`;
   }
 }
 
@@ -601,7 +610,7 @@ bot.on("messageCreate", async msg => {
 if (cmd === "help") return msg.channel.send([
   "**📖 Commands:**",
   "`!xlsqr <query>` — Search files",
-  "`!ask <question>` — Chiedi all'AI 🤖",
+  "`!askai <question>` — Chiedi all'AI 🤖",
   "`!script <descrizione>` — Genera uno script",
   "`!claimdaily` — 1 free credit",
   "`!balance` — Credits",
@@ -626,7 +635,7 @@ if (cmd === "help") return msg.channel.send([
 ].join("\n"));
 
 // ========== ASK AI ==========
-if (cmd === "ask" || cmd === "ai" || cmd === "chiedi") {
+if (cmd === "askai" || cmd === "ai" || cmd === "chiedi") {
   const question = args.join(" ").trim();
   if (!question) return msg.channel.send("❌ `!ask <domanda>`");
   
