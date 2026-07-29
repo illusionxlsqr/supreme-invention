@@ -8,6 +8,7 @@ const path = require("path");
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const CHUTES_API_KEY = process.env.CHUTES_API_KEY || "cpk_ab754db536124f0da646c681e5a2905c.62015a6dcb1156569ccafc22197282b6.LXtsrxiqzMgfw9NCKYbWQxk5ADZThwWd";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
@@ -284,11 +285,34 @@ function extractAllFiles(raw) {
 async function fetchMsgs(chId, before) {
   let url = `https://discord.com/api/v10/channels/${chId}/messages?limit=100`;
   if (before) url += `&before=${before}`;
-  try {
-    const r = await axios.get(url, { headers: { Authorization: AUTH }, validateStatus: () => true });
-    if (r.status === 429) { await sleep((r.data?.retry_after || 5) * 1000); return fetchMsgs(chId, before); }
-    return r.status === 200 && Array.isArray(r.data) ? r.data : [];
-  } catch { return []; }
+  
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const r = await axios.get(url, { 
+        headers: { Authorization: AUTH }, 
+        validateStatus: () => true,
+        timeout: 30000
+      });
+      
+      if (r.status === 429) {
+        const retryAfter = (r.data?.retry_after || 5) * 1000;
+        console.log(`[FETCH] Rate limited, waiting ${retryAfter}ms...`);
+        await sleep(retryAfter + 1000);
+        continue;
+      }
+      
+      if (r.status === 200 && Array.isArray(r.data)) {
+        return r.data;
+      }
+      
+      console.error(`[FETCH] Status ${r.status} for channel ${chId}`);
+      return [];
+    } catch (err) {
+      console.error(`[FETCH] Error attempt ${attempt + 1}:`, err.message);
+      if (attempt < 4) await sleep(2000 * (attempt + 1));
+    }
+  }
+  return [];
 }
 
 // ================= CACHE =================
@@ -298,24 +322,77 @@ let fileContents = new Map(); // Store file contents for AI
 
 function addToCache(files) {
   let n = 0;
-  for (const f of files) if (!cacheUrls.has(f.url)) { cacheUrls.add(f.url); fileCache.unshift(f); n++; }
+  for (const f of files) {
+    // Normalize URL to avoid duplicates
+    const normalizedUrl = f.url.split('?')[0];
+    if (!cacheUrls.has(normalizedUrl)) { 
+      cacheUrls.add(normalizedUrl); 
+      cacheUrls.add(f.url);
+      fileCache.unshift(f); 
+      n++; 
+    }
+  }
   if (n) console.log(`[CACHE] +${n} → ${fileCache.length} total`);
   return n;
 }
 
-async function scanChannel(chId) {
+async function scanChannel(chId, statusMsg = null) {
   const all = [], urls = new Set();
-  let last, batches = 0;
+  let last = null;
+  let batches = 0;
+  let totalMsgs = 0;
+  
+  console.log(`[SCAN] Starting full scan of channel ${chId}...`);
+  
   while (true) {
     const msgs = await fetchMsgs(chId, last);
-    if (!msgs.length) break;
+    
+    if (!msgs || !msgs.length) {
+      console.log(`[SCAN] No more messages after ${batches} batches`);
+      break;
+    }
+    
     batches++;
-    for (const m of msgs) for (const f of extractTxt(m)) if (!urls.has(f.url)) { urls.add(f.url); all.push(f); }
+    totalMsgs += msgs.length;
+    
+    // Extract .txt files from each message
+    for (const m of msgs) {
+      const files = extractTxt(m);
+      for (const f of files) {
+        const normalizedUrl = f.url.split('?')[0];
+        if (!urls.has(normalizedUrl)) { 
+          urls.add(normalizedUrl); 
+          all.push(f); 
+        }
+      }
+    }
+    
+    // Update status every 10 batches
+    if (statusMsg && batches % 10 === 0) {
+      try {
+        await statusMsg.edit(`⏳ Scanning... ${batches * 100}+ messages, ${all.length} .txt files found...`);
+      } catch {}
+    }
+    
+    // Get the last message ID for pagination
     last = msgs[msgs.length - 1].id;
-    if (msgs.length < 100) break;
-    await sleep(300);
+    
+    // Log progress
+    if (batches % 20 === 0) {
+      console.log(`[SCAN] Progress: ${batches} batches, ${totalMsgs} msgs, ${all.length} files`);
+    }
+    
+    // If we got less than 100 messages, we've reached the end
+    if (msgs.length < 100) {
+      console.log(`[SCAN] Reached end of channel (last batch had ${msgs.length} msgs)`);
+      break;
+    }
+    
+    // Rate limit protection - be gentle
+    await sleep(350);
   }
-  console.log(`[SCAN] ${chId}: ${all.length} files, ${batches} batches`);
+  
+  console.log(`[SCAN] COMPLETE: ${chId} → ${all.length} files from ${totalMsgs} messages (${batches} batches)`);
   return all;
 }
 
@@ -364,8 +441,12 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
 }
 
 async function askAI(userId, question, relevantFiles = []) {
-  if (!OPENAI_API_KEY) {
-    return "❌ AI non configurata (manca OPENAI_API_KEY)";
+  // Use Chutes API (free) or fallback to OpenAI
+  const useChutes = !!CHUTES_API_KEY;
+  const apiKey = useChutes ? CHUTES_API_KEY : OPENAI_API_KEY;
+  
+  if (!apiKey) {
+    return "❌ AI non configurata (manca API key)";
   }
   
   // Build context from files
@@ -402,17 +483,26 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
   ];
   
   try {
-    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4o-mini",
+    // Chutes.ai endpoint and model
+    const endpoint = useChutes 
+      ? "https://llm.chutes.ai/v1/chat/completions"
+      : "https://api.openai.com/v1/chat/completions";
+    
+    const model = useChutes 
+      ? "deepseek-ai/DeepSeek-V3-0324"  // Good free model on Chutes
+      : "gpt-4o-mini";
+    
+    const res = await axios.post(endpoint, {
+      model,
       messages,
       max_tokens: 2000,
       temperature: 0.8
     }, {
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
-      timeout: 60000
+      timeout: 120000
     });
     
     const reply = res.data.choices[0]?.message?.content || "❌ Nessuna risposta";
@@ -532,7 +622,7 @@ if (cmd === "help") return msg.channel.send([
   "`!reload` / `!debug`",
   "`!clearconv` — Reset AI conversation",
   "",
-  `**Cache:** ${fileCache.length} files | **AI:** ${OPENAI_API_KEY ? "✅" : "❌"}`
+  `**Cache:** ${fileCache.length} files | **AI:** ${CHUTES_API_KEY ? "✅ Chutes" : OPENAI_API_KEY ? "✅ OpenAI" : "❌"}`
 ].join("\n"));
 
 // ========== ASK AI ==========
@@ -749,7 +839,7 @@ if (cmd === "debug") {
     `Guild: \`${msg.guild?.name || "DM"}\``,
     `Members: **${cachedMembers}** cached / **${msg.guild?.memberCount || 0}** total`,
     `File Cache: **${fileCache.length}**`,
-    `AI: **${OPENAI_API_KEY ? "✅ Configured" : "❌ No API Key"}**`,
+    `AI: **${CHUTES_API_KEY ? "✅ Chutes.ai" : OPENAI_API_KEY ? "✅ OpenAI" : "❌ No API Key"}**`,
     `Conversations: **${Object.keys(D.conversations).length}** users`,
     `AUTH: **${AUTH ? "✅" : "❌"}**`
   ].join("\n"));
@@ -758,11 +848,11 @@ if (cmd === "debug") {
 // ========== DOWNLOAD ==========
 if (cmd === "download") {
   const ch = args[0] || msg.channelId;
-  const st = await msg.channel.send(`⏳ Downloading .txt from \`${ch}\`...`);
-  const files = await scanChannel(ch);
+  const st = await msg.channel.send(`⏳ Downloading ALL .txt from \`${ch}\`...\nQuesto potrebbe richiedere tempo per canali grandi...`);
+  const files = await scanChannel(ch, st);
   if (!files.length) return st.edit(`❌ No .txt in \`${ch}\`.`);
   const added = addToCache(files);
-  return st.edit(`✅ Found **${files.length}** · New: **${added}** · Total: **${fileCache.length}**`);
+  return st.edit(`✅ **COMPLETE**\n📁 Found: **${files.length}** files\n🆕 New: **${added}**\n📦 Total in cache: **${fileCache.length}**`);
 }
 
 // ========== SOURCES ==========
@@ -868,13 +958,17 @@ if (cmd === "perms") {
 
 // ========== RELOAD ==========
 if (cmd === "reload") {
-  const st = await msg.channel.send("🔄 Reloading...");
+  const st = await msg.channel.send(`🔄 Reloading from ${SOURCE_CHANNELS.length} source channels...\n⏳ Questo potrebbe richiedere tempo...`);
   fileCache = []; cacheUrls = new Set();
-  for (const ch of SOURCE_CHANNELS) {
-    const files = await scanChannel(ch);
+  let totalFiles = 0;
+  for (let i = 0; i < SOURCE_CHANNELS.length; i++) {
+    const ch = SOURCE_CHANNELS[i];
+    await st.edit(`🔄 Scanning channel ${i + 1}/${SOURCE_CHANNELS.length}: \`${ch}\`...\n📁 Files so far: **${totalFiles}**`).catch(() => {});
+    const files = await scanChannel(ch, st);
     addToCache(files);
+    totalFiles += files.length;
   }
-  return st.edit(`✅ Loaded **${fileCache.length}** files from ${SOURCE_CHANNELS.length} channels.`);
+  return st.edit(`✅ **RELOAD COMPLETE**\n📁 Loaded **${fileCache.length}** files from ${SOURCE_CHANNELS.length} channels.`);
 }
 
 // ========== LEAKALL ==========
@@ -894,79 +988,57 @@ if (cmd === "leakall") {
   }
   
   const total = fileCache.length;
-  const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES** ${targetChannelId ? `in <#${targetChannelId}>` : ""}...\n⏳ Questo potrebbe richiedere un po'...`);
+  const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES** ${targetChannelId ? `in <#${targetChannelId}>` : ""}...\n⏳ Questo potrebbe richiedere MOLTO tempo...\n💡 Invio file uno alla volta per non perderne nessuno.`);
   
   let sent = 0;
   let failed = 0;
   let lastUpdate = Date.now();
   
-  // Process in batches of 10 files
-  for (let i = 0; i < fileCache.length; i += 10) {
-    const batch = fileCache.slice(i, i + 10);
-    const filesToSend = [];
+  // Process files ONE BY ONE to ensure everything gets sent
+  for (let i = 0; i < fileCache.length; i++) {
+    const f = fileCache[i];
     
-    for (const f of batch) {
-      const data = await dl(f.url);
-      if (data) {
-        filesToSend.push({ attachment: data, name: f.name });
-      } else {
-        failed++;
-      }
+    // Download with retries
+    let data = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      data = await dl(f.url);
+      if (data) break;
+      await sleep(1000 * (attempt + 1));
     }
     
-    if (filesToSend.length > 0) {
-      try {
-        // Discord limit is 10 files per message, but also 25MB total
-        // Split into smaller batches if needed
-        let currentBatch = [];
-        let currentSize = 0;
-        
-        for (const file of filesToSend) {
-          const fileSize = file.attachment.length;
-          
-          // If adding this file would exceed 24MB or 10 files, send current batch
-          if (currentSize + fileSize > 24 * 1024 * 1024 || currentBatch.length >= 10) {
-            if (currentBatch.length > 0) {
-              await targetChannel.send({ files: currentBatch });
-              sent += currentBatch.length;
-            }
-            currentBatch = [];
-            currentSize = 0;
-            await sleep(1500);
-          }
-          
-          currentBatch.push(file);
-          currentSize += fileSize;
-        }
-        
-        // Send remaining files
-        if (currentBatch.length > 0) {
-          await targetChannel.send({ files: currentBatch });
-          sent += currentBatch.length;
-        }
-      } catch (err) {
-        console.error("[LEAKALL]", err.message);
-        // Try sending one by one
-        for (const file of filesToSend) {
-          try {
-            await targetChannel.send({ files: [file] });
-            sent++;
-            await sleep(500);
-          } catch {
+    if (data) {
+      // Send file
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await targetChannel.send({ 
+            content: `📄 \`${f.name}\` (${i + 1}/${total})`,
+            files: [{ attachment: data, name: f.name }] 
+          });
+          sent++;
+          break;
+        } catch (err) {
+          console.error(`[LEAKALL] Send failed attempt ${attempt + 1}:`, err.message);
+          if (attempt < 2) {
+            await sleep(3000 * (attempt + 1));
+          } else {
             failed++;
           }
         }
       }
+    } else {
+      failed++;
+      console.log(`[LEAKALL] Download failed for: ${f.name}`);
     }
     
-    // Update status every 30 seconds or every 50 files
-    if (Date.now() - lastUpdate > 30000 || (i > 0 && i % 50 === 0)) {
+    // Update status every 20 files or 30 seconds
+    if (i % 20 === 0 || Date.now() - lastUpdate > 30000) {
       lastUpdate = Date.now();
-      const progress = Math.round((i / total) * 100);
-      await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 Progress: **${progress}%** (${sent} sent, ${failed} failed)\n⏳ Working...`).catch(() => {});
+      const progress = Math.round(((i + 1) / total) * 100);
+      const eta = sent > 0 ? Math.round(((total - i) * 2.5) / 60) : "?";
+      await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 Progress: **${progress}%** (${i + 1}/${total})\n✅ Sent: **${sent}** | ❌ Failed: **${failed}**\n⏱️ ETA: ~${eta} min`).catch(() => {});
     }
     
-    // Rate limit protection
+    // Rate limit protection - wait between each file
     await sleep(2000);
   }
   
