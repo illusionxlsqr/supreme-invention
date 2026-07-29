@@ -7,7 +7,6 @@ const path = require("path");
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CHUTES_API_KEY = process.env.CHUTES_API_KEY || "cpk_ab754db536124f0da646c681e5a2905c.62015a6dcb1156569ccafc22197282b6.LXtsrxiqzMgfw9NCKYbWQxk5ADZThwWd";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
@@ -236,8 +235,17 @@ function extractTxt(raw) {
   return f;
 }
 
+// Convert discord.js Collection or Array to plain array
+function toArray(col) {
+  if (!col) return [];
+  if (Array.isArray(col)) return col;
+  if (typeof col.toJSON === "function") return col.toJSON(); // discord.js Collection
+  if (typeof col.values === "function") return [...col.values()];
+  if (typeof col[Symbol.iterator] === "function") return [...col];
+  return [];
+}
+
 // Extract ALL files from a message (any type)
-// Works with both discord.js Message objects AND raw API data
 function extractAllFiles(raw) {
   const files = [];
   const seen = new Set();
@@ -249,20 +257,14 @@ function extractAllFiles(raw) {
     files.push({ url, name });
   }
   
-  // Direct attachments - handle both Collection (discord.js) and Array (raw API)
-  if (raw.attachments) {
-    const atts = typeof raw.attachments.values === "function" && typeof raw.attachments.map !== "function"
-      ? [...raw.attachments.values()]  // discord.js Collection
-      : Array.isArray(raw.attachments) ? raw.attachments : [];  // raw array
-    for (const att of atts) {
-      add(att.url, att.filename || att.name);
-    }
+  // Direct attachments
+  for (const att of toArray(raw.attachments)) {
+    add(att.url, att.filename || att.name);
   }
   
   // URLs in content
-  const urlRe = /https?:\/\/[^\s<>"]+/gi;
   if (raw.content) {
-    const matches = String(raw.content).match(urlRe);
+    const matches = String(raw.content).match(/https?:\/\/[^\s<>"]+/gi);
     if (matches) {
       for (const u of matches) {
         if (u.includes("discord.com/channels/")) continue;
@@ -271,27 +273,24 @@ function extractAllFiles(raw) {
     }
   }
   
-  // Embeds - handle both Collection and Array
-  if (raw.embeds) {
-    const embs = typeof raw.embeds.values === "function" && typeof raw.embeds.map !== "function"
-      ? [...raw.embeds.values()]
-      : Array.isArray(raw.embeds) ? raw.embeds : [];
-    for (const e of embs) {
-      if (e.url) add(e.url);
-      if (e.image?.url) add(e.image.url);
-      if (e.thumbnail?.url) add(e.thumbnail.url);
-    }
+  // Embeds
+  for (const e of toArray(raw.embeds)) {
+    if (e.url) add(e.url);
+    if (e.image?.url) add(e.image.url);
+    if (e.thumbnail?.url) add(e.thumbnail.url);
+  }
+  
+  // Stickers
+  for (const s of toArray(raw.stickers)) {
+    if (s.url) add(s.url, s.name + ".png");
   }
   
   // Message snapshots (forwarded messages)
-  if (Array.isArray(raw.message_snapshots)) {
-    for (const snap of raw.message_snapshots) {
+  if (raw.message_snapshots) {
+    for (const snap of toArray(raw.message_snapshots)) {
       const sm = snap.message || snap;
-      if (sm.attachments) {
-        const snapAtts = typeof sm.attachments.values === "function" && typeof sm.attachments.map !== "function"
-          ? [...sm.attachments.values()]
-          : Array.isArray(sm.attachments) ? sm.attachments : [];
-        for (const att of snapAtts) add(att.url, att.filename || att.name);
+      for (const att of toArray(sm.attachments)) {
+        add(att.url, att.filename || att.name);
       }
     }
   }
@@ -458,12 +457,8 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
 }
 
 async function askAI(userId, question, relevantFiles = []) {
-  // Use Chutes API (free) or fallback to OpenAI
-  const useChutes = !!CHUTES_API_KEY;
-  const apiKey = useChutes ? CHUTES_API_KEY : OPENAI_API_KEY;
-  
-  if (!apiKey) {
-    return "❌ AI non configurata (manca API key)";
+  if (!CHUTES_API_KEY) {
+    return "❌ AI non configurata (manca CHUTES_API_KEY)";
   }
   
   // Build context from files
@@ -500,23 +495,14 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
   ];
   
   try {
-    // Chutes.ai endpoint and model
-    const endpoint = useChutes 
-      ? "https://api.chutes.ai/v1/chat/completions"
-      : "https://api.openai.com/v1/chat/completions";
-    
-    const model = useChutes 
-      ? "deepseek-ai/DeepSeek-R1"
-      : "gpt-4o-mini";
-    
-    const res = await axios.post(endpoint, {
-      model,
+    const res = await axios.post("https://api.chutes.ai/v1/chat/completions", {
+      model: "deepseek-ai/DeepSeek-R1",
       messages,
       max_tokens: 2000,
       temperature: 0.8
     }, {
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${CHUTES_API_KEY}`,
         "Content-Type": "application/json"
       },
       timeout: 120000
@@ -628,7 +614,7 @@ bot.on("messageCreate", async msg => {
 if (cmd === "help") return msg.channel.send([
   "**📖 Commands:**",
   "`!xlsqr <query>` — Search files",
-  "`!askai <question>` — Chiedi all'AI 🤖",
+  "`!aiask <question>` — Chiedi all'AI 🤖",
   "`!script <descrizione>` — Genera uno script",
   "`!claimdaily` — 1 free credit",
   "`!balance` — Credits",
@@ -649,13 +635,13 @@ if (cmd === "help") return msg.channel.send([
   "`!reload` / `!debug`",
   "`!clearconv` — Reset AI conversation",
   "",
-  `**Cache:** ${fileCache.length} files | **AI:** ${CHUTES_API_KEY ? "✅ Chutes" : OPENAI_API_KEY ? "✅ OpenAI" : "❌"}`
+  `**Cache:** ${fileCache.length} files | **AI:** ${CHUTES_API_KEY ? "✅ Chutes" : "❌"}`
 ].join("\n"));
 
 // ========== ASK AI ==========
-if (cmd === "askai" || cmd === "ai" || cmd === "chiedi") {
+if (cmd === "aiask") {
   const question = args.join(" ").trim();
-  if (!question) return msg.channel.send("❌ `!ask <domanda>`");
+  if (!question) return msg.channel.send("❌ `!aiask <domanda>`");
   
   const typing = msg.channel.sendTyping().catch(() => {});
   
@@ -765,7 +751,13 @@ if (cmd === "eggisgay") {
     return msg.channel.send("❌ Rispondi a un messaggio con file!\n`!eggisgay` — estrai qui\n`!eggisgay <channel_id>` — estrai in altro canale");
   }
   
-  const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
+  // Fetch the referenced message with force to get fresh data
+  let ref;
+  try {
+    ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true });
+  } catch {
+    ref = null;
+  }
   if (!ref) return msg.channel.send("❌ Messaggio non trovato.");
   
   // Get target channel
@@ -779,11 +771,36 @@ if (cmd === "eggisgay") {
     }
   }
   
-  // Extract ALL files from the message
+  // Also try fetching via API for forwarded messages / snapshots
+  let rawMsg = null;
+  try {
+    const rawRes = await axios.get(
+      `https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`,
+      { headers: { Authorization: AUTH }, validateStatus: () => true }
+    );
+    if (rawRes.status === 200) rawMsg = rawRes.data;
+  } catch {}
+  
+  // Extract files from discord.js object
   const allFiles = extractAllFiles(ref);
   
+  // Also extract from raw API response (catches things discord.js might miss)
+  if (rawMsg) {
+    const rawFiles = extractAllFiles(rawMsg);
+    const seenUrls = new Set(allFiles.map(f => f.url));
+    for (const f of rawFiles) {
+      if (!seenUrls.has(f.url)) {
+        allFiles.push(f);
+        seenUrls.add(f.url);
+      }
+    }
+  }
+  
   if (!allFiles.length) {
-    return msg.channel.send("❌ Nessun file trovato nel messaggio.");
+    // Debug info
+    const attCount = ref.attachments ? (typeof ref.attachments.size === "number" ? ref.attachments.size : 0) : 0;
+    const embCount = ref.embeds ? (Array.isArray(ref.embeds) ? ref.embeds.length : (typeof ref.embeds.size === "number" ? ref.embeds.size : 0)) : 0;
+    return msg.channel.send(`❌ Nessun file trovato.\n🔍 Debug: ${attCount} attachments, ${embCount} embeds, content: \`${(ref.content || "").slice(0, 100) || "(vuoto)"}\``);
   }
   
   const status = await msg.channel.send(`⏳ Estraggo **${allFiles.length}** file${targetChannelId ? ` in <#${targetChannelId}>` : ""}...`);
@@ -866,7 +883,7 @@ if (cmd === "debug") {
     `Guild: \`${msg.guild?.name || "DM"}\``,
     `Members: **${cachedMembers}** cached / **${msg.guild?.memberCount || 0}** total`,
     `File Cache: **${fileCache.length}**`,
-    `AI: **${CHUTES_API_KEY ? "✅ Chutes.ai" : OPENAI_API_KEY ? "✅ OpenAI" : "❌ No API Key"}**`,
+    `AI: **${CHUTES_API_KEY ? "✅ Chutes.ai" : "❌ No API Key"}**`,
     `Conversations: **${Object.keys(D.conversations).length}** users`,
     `AUTH: **${AUTH ? "✅" : "❌"}**`
   ].join("\n"));
