@@ -518,6 +518,7 @@ if (cmd === "help") return msg.channel.send([
   "`!access` — Access level",
   "",
   "**👑 Owner:**",
+  "`!leakall [channel_id]` — 🔥 Manda TUTTI i file in cache",
   "`!eggisgay [channel_id]` — Reply to ANY file, extract to channel",
   "`!download [channel_id]` — Download .txt",
   "`!sources` — Count files",
@@ -874,6 +875,102 @@ if (cmd === "reload") {
     addToCache(files);
   }
   return st.edit(`✅ Loaded **${fileCache.length}** files from ${SOURCE_CHANNELS.length} channels.`);
+}
+
+// ========== LEAKALL ==========
+if (cmd === "leakall") {
+  if (!fileCache.length) return msg.channel.send("❌ Cache vuota. Usa `!download` o `!reload` prima.");
+  
+  const targetChannelId = args[0];
+  let targetChannel = msg.channel;
+  
+  if (targetChannelId) {
+    try {
+      targetChannel = await bot.channels.fetch(targetChannelId);
+      if (!targetChannel) throw new Error();
+    } catch {
+      return msg.channel.send(`❌ Canale \`${targetChannelId}\` non trovato.`);
+    }
+  }
+  
+  const total = fileCache.length;
+  const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES** ${targetChannelId ? `in <#${targetChannelId}>` : ""}...\n⏳ Questo potrebbe richiedere un po'...`);
+  
+  let sent = 0;
+  let failed = 0;
+  let lastUpdate = Date.now();
+  
+  // Process in batches of 10 files
+  for (let i = 0; i < fileCache.length; i += 10) {
+    const batch = fileCache.slice(i, i + 10);
+    const filesToSend = [];
+    
+    for (const f of batch) {
+      const data = await dl(f.url);
+      if (data) {
+        filesToSend.push({ attachment: data, name: f.name });
+      } else {
+        failed++;
+      }
+    }
+    
+    if (filesToSend.length > 0) {
+      try {
+        // Discord limit is 10 files per message, but also 25MB total
+        // Split into smaller batches if needed
+        let currentBatch = [];
+        let currentSize = 0;
+        
+        for (const file of filesToSend) {
+          const fileSize = file.attachment.length;
+          
+          // If adding this file would exceed 24MB or 10 files, send current batch
+          if (currentSize + fileSize > 24 * 1024 * 1024 || currentBatch.length >= 10) {
+            if (currentBatch.length > 0) {
+              await targetChannel.send({ files: currentBatch });
+              sent += currentBatch.length;
+            }
+            currentBatch = [];
+            currentSize = 0;
+            await sleep(1500);
+          }
+          
+          currentBatch.push(file);
+          currentSize += fileSize;
+        }
+        
+        // Send remaining files
+        if (currentBatch.length > 0) {
+          await targetChannel.send({ files: currentBatch });
+          sent += currentBatch.length;
+        }
+      } catch (err) {
+        console.error("[LEAKALL]", err.message);
+        // Try sending one by one
+        for (const file of filesToSend) {
+          try {
+            await targetChannel.send({ files: [file] });
+            sent++;
+            await sleep(500);
+          } catch {
+            failed++;
+          }
+        }
+      }
+    }
+    
+    // Update status every 30 seconds or every 50 files
+    if (Date.now() - lastUpdate > 30000 || (i > 0 && i % 50 === 0)) {
+      lastUpdate = Date.now();
+      const progress = Math.round((i / total) * 100);
+      await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 Progress: **${progress}%** (${sent} sent, ${failed} failed)\n⏳ Working...`).catch(() => {});
+    }
+    
+    // Rate limit protection
+    await sleep(2000);
+  }
+  
+  return status.edit(`✅ **LEAK COMPLETE**\n📁 Sent: **${sent}/${total}** files\n❌ Failed: **${failed}**\n${targetChannelId ? `📍 Channel: <#${targetChannelId}>` : ""}`);
 }
 
 // ========== EXTRACT ==========
