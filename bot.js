@@ -7,7 +7,7 @@ const path = require("path");
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHUTES_API_KEY = process.env.CHUTES_API_KEY || "cpk_ab754db536124f0da646c681e5a2905c.62015a6dcb1156569ccafc22197282b6.LXtsrxiqzMgfw9NCKYbWQxk5ADZThwWd";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AQ.Ab8RN6IbBZIuYDYzE0OjjirumJb1JMUpgswxR_9nAIy8jVF_kw";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
@@ -457,8 +457,8 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
 }
 
 async function askAI(userId, question, relevantFiles = []) {
-  if (!CHUTES_API_KEY) {
-    return "❌ AI non configurata (manca CHUTES_API_KEY)";
+  if (!GEMINI_API_KEY) {
+    return "❌ AI non configurata (manca GEMINI_API_KEY)";
   }
   
   // Build context from files
@@ -495,24 +495,67 @@ ${fileContext ? "Hai accesso a questi file che potrebbero essere utili:" + fileC
   ];
   
   try {
-    const res = await axios.post("https://api.chutes.ai/v1/chat/completions", {
-      model: "deepseek-ai/DeepSeek-R1",
-      messages,
-      max_tokens: 2000,
-      temperature: 0.8
-    }, {
-      headers: {
-        "Authorization": `Bearer ${CHUTES_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 120000
-    });
+    // Gemini API (OpenAI-compatible endpoint)
+    const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"];
+    
+    let res = null;
+    let lastErr = null;
+    
+    for (const model of GEMINI_MODELS) {
+      try {
+        res = await axios.post(
+          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+          { model, messages, max_tokens: 2000, temperature: 0.8 },
+          {
+            headers: {
+              "Authorization": `Bearer ${GEMINI_API_KEY}`,
+              "Content-Type": "application/json"
+            },
+            timeout: 120000,
+            validateStatus: () => true
+          }
+        );
+        
+        if (res.status === 200 && res.data?.choices) break;
+        
+        // Rate limit - wait and retry same model
+        if (res.status === 429) {
+          const retryDelay = res.data?.error?.details?.find(d => d.retryDelay)?.retryDelay;
+          const waitMs = retryDelay ? parseInt(retryDelay) * 1000 : 15000;
+          console.log(`[AI] Rate limited on ${model}, waiting ${waitMs}ms...`);
+          await sleep(Math.min(waitMs, 30000));
+          
+          // Retry once
+          res = await axios.post(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            { model, messages, max_tokens: 2000, temperature: 0.8 },
+            {
+              headers: {
+                "Authorization": `Bearer ${GEMINI_API_KEY}`,
+                "Content-Type": "application/json"
+              },
+              timeout: 120000,
+              validateStatus: () => true
+            }
+          );
+          if (res.status === 200 && res.data?.choices) break;
+        }
+        
+        lastErr = res.data?.error?.message || `Status ${res.status}`;
+        res = null;
+      } catch (e) {
+        lastErr = e.message;
+        res = null;
+      }
+    }
+    
+    if (!res || res.status !== 200 || !res.data?.choices) {
+      return `❌ Errore AI: ${lastErr || "Nessun modello disponibile"}`;
+    }
     
     let reply = res.data.choices[0]?.message?.content || "❌ Nessuna risposta";
-    
-    // Strip <think>...</think> tags from DeepSeek-R1 reasoning
-    reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-    if (!reply) reply = "🤔 (Il modello ha pensato ma non ha risposto, riprova)";
+    reply = reply.trim();
+    if (!reply) reply = "🤔 Nessuna risposta, riprova.";
     
     // Save to history
     D.conversations[userId].push({ role: "user", content: question });
@@ -635,7 +678,7 @@ if (cmd === "help") return msg.channel.send([
   "`!reload` / `!debug`",
   "`!clearconv` — Reset AI conversation",
   "",
-  `**Cache:** ${fileCache.length} files | **AI:** ${CHUTES_API_KEY ? "✅ Chutes" : "❌"}`
+  `**Cache:** ${fileCache.length} files | **AI:** ${GEMINI_API_KEY ? "✅ Gemini" : "❌"}`
 ].join("\n"));
 
 // ========== ASK AI ==========
@@ -883,7 +926,7 @@ if (cmd === "debug") {
     `Guild: \`${msg.guild?.name || "DM"}\``,
     `Members: **${cachedMembers}** cached / **${msg.guild?.memberCount || 0}** total`,
     `File Cache: **${fileCache.length}**`,
-    `AI: **${CHUTES_API_KEY ? "✅ Chutes.ai" : "❌ No API Key"}**`,
+    `AI: **${GEMINI_API_KEY ? "✅ Gemini" : "❌ No API Key"}**`,
     `Conversations: **${Object.keys(D.conversations).length}** users`,
     `AUTH: **${AUTH ? "✅" : "❌"}**`
   ].join("\n"));
@@ -1168,7 +1211,7 @@ bot.on("guildMemberRemove", member => forgetGuildMember(member.guild.id, member.
 if (BOT_TOKEN) {
   bot.once("ready", async () => {
     console.log(`[BOT] ${bot.user?.tag} online!`);
-    console.log(`[BOT] AI: ${OPENAI_API_KEY ? "✅" : "❌"}`);
+    console.log(`[BOT] AI: ${GEMINI_API_KEY ? "✅ Gemini" : "❌"}`);
     for (const guild of bot.guilds.cache.values()) {
       syncGuildMembers(guild).catch(() => {});
     }
