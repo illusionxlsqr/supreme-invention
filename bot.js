@@ -957,7 +957,7 @@ async function doArchive(msg, chId) {
 
 // ================= START =================
 process.on("unhandledRejection", e => console.error("[ERR]", e));
-
+process.on("uncaughtException", e => console.error("[ERR]", e));
 
 // Save on exit
 process.on("SIGINT", () => { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); process.exit(); });
