@@ -984,4 +984,165 @@ if (cmd === "removecredit" || cmd === "removecredits") {
 }
 
 // ========== GIVEPERMS ==========
-if (cmd === "g
+if (cmd === "giveperms") {
+  const input = args.join(" ").trim();
+  if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`\n\n⚠️ This gives unlimited !xlsqr + navigation only, NOT owner commands.");
+  const rm = input.match(/^<@&(\d+)>$/);
+  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role <@&${rm[1]}> → unlimited xlsqr + navigation W`); }
+  if (msg.guild) {
+    const role = await findRole(msg.guild, input);
+    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** → unlimited xlsqr + navigation W`); }
+  }
+  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User <@${um[1]}> → unlimited xlsqr + navigation W`); }
+  return msg.channel.send(`❌ Not found: \`${input}\``);
+}
+
+// ========== REMOVEPERMS ==========
+if (cmd === "removeperms") {
+  const input = args.join(" ").trim();
+  if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ All perms removed."); }
+  const rm = input.match(/^<@&(\d+)>$/);
+  if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send(`✅ Removed role.`); }
+  if (msg.guild) {
+    const role = await findRole(msg.guild, input);
+    if (role) { D.roles = D.roles.filter(id => id !== role.id); save(); return msg.channel.send(`✅ Removed role **${role.name}**.`); }
+  }
+  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/);
+  if (um) { D.users = D.users.filter(id => id !== um[1]); D.roles = D.roles.filter(id => id !== um[1]); save(); return msg.channel.send(`✅ Removed.`); }
+  return msg.channel.send("❌ Not found");
+}
+
+// ========== PERMS ==========
+if (cmd === "perms") {
+  const lines = ["**📋 Permissions:**", "", "**Allowed Roles:**"];
+  if (!D.roles.length) lines.push("None"); else for (const id of D.roles) lines.push(`• <@&${id}>`);
+  lines.push("", "**Allowed Users:**");
+  if (!D.users.length) lines.push("None"); else for (const id of D.users) lines.push(`• <@${id}>`);
+  lines.push("", `**Bot Status:** ${D.botStopped ? "🔒 Locked" : "🔓 Unlocked"}`);
+  return msg.channel.send(lines.join("\n"));
+}
+
+// ========== RELOAD ==========
+if (cmd === "reload") {
+  const st = await msg.channel.send(`🔄 Reloading from ${SOURCE_CHANNELS.length} channels...`);
+  fileCache = []; cacheUrls = new Set();
+  for (const ch of SOURCE_CHANNELS) {
+    const files = await scanChannel(ch, st);
+    addToCache(files);
+  }
+  return st.edit(`✅ Loaded **${fileCache.length}** files W`);
+}
+
+// ========== LEAKALL ==========
+if (cmd === "leakall") {
+  if (!fileCache.length) return msg.channel.send("❌ Cache empty bro.");
+  const targetChannelId = args[0];
+  let targetChannel = msg.channel;
+  if (targetChannelId) {
+    try { targetChannel = await bot.channels.fetch(targetChannelId); } catch { return msg.channel.send(`❌ Channel not found.`); }
+  }
+  const total = fileCache.length;
+  const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES**...`);
+  let sent = 0, failed = 0;
+  
+  for (let i = 0; i < fileCache.length; i++) {
+    const f = fileCache[i];
+    let data = null;
+    for (let attempt = 0; attempt < 3; attempt++) { data = await dl(f.url); if (data) break; await sleep(1000 * (attempt + 1)); }
+    
+    if (data) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { await targetChannel.send({ content: `📄 \`${f.name}\` (${i+1}/${total})`, files: [{ attachment: data, name: f.name }] }); sent++; break; }
+        catch { if (attempt < 2) await sleep(3000 * (attempt + 1)); else failed++; }
+      }
+    } else { failed++; }
+    
+    if (i % 20 === 0) await status.edit(`🔥 Progress: **${Math.round((i+1)/total*100)}%** | ✅ ${sent} | ❌ ${failed}`).catch(() => {});
+    await sleep(2000);
+  }
+  
+  return status.edit(`✅ **COMPLETE** | Sent: **${sent}/${total}** | Failed: **${failed}** W`);
+}
+
+// ========== EXTRACT ==========
+if (cmd === "extract") {
+  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a `!xlsqr` result OR .zip file bro.");
+  const search = searches.get(msg.reference.messageId);
+  if (search) {
+    await msg.channel.send(`📦 Extracting **${search.m.length}** files...`);
+    let sent = 0;
+    for (let i = 0; i < search.m.length; i += 10) {
+      const batch = search.m.slice(i, i + 10), files = [];
+      for (const f of batch) { const d = await dl(f.url); if (d) { files.push({ attachment: d, name: f.name }); sent++; } }
+      if (files.length) await msg.channel.send({ files });
+      if (i + 10 < search.m.length) await sleep(1500);
+    }
+    return msg.channel.send(`✅ Sent **${sent}** files W`);
+  }
+  const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
+  if (!ref) return msg.channel.send("❌ Message not found.");
+  let zipUrl = null;
+  for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; }
+  if (!zipUrl) return msg.channel.send("❌ Reply to a search result or .zip file.");
+  const zd = await dl(zipUrl);
+  if (!zd) return msg.channel.send("❌ Download failed.");
+  const zip = new AdmZip(zd);
+  const extracted = [];
+  for (const e of zip.getEntries()) if (!e.isDirectory) extracted.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+  if (!extracted.length) return msg.channel.send("❌ No files in zip.");
+  for (let i = 0; i < extracted.length; i += 10) {
+    await msg.channel.send({ files: extracted.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) });
+    if (i + 10 < extracted.length) await sleep(1000);
+  }
+  return msg.channel.send(`✅ Done W`);
+}
+
+  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ bruh moment: ${err?.message || "Error"}`); } catch {} }
+});
+
+// ================= ARCHIVE =================
+let archBusy = false;
+async function doArchive(msg, chId) {
+  if (archBusy) return msg.channel.send("⏳ Busy bro.");
+  if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
+  archBusy = true;
+  try {
+    await msg.channel.send("⏳ Archiving...");
+    const all = await scanChannel(chId);
+    if (!all.length) return msg.channel.send("❌ No .txt files.");
+    const zip = new AdmZip(); let ok = 0;
+    for (let i = 0; i < all.length; i += 10) {
+      const batch = all.slice(i, i + 10);
+      const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) })));
+      for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; }
+    }
+    if (!ok) return msg.channel.send("❌ All downloads failed.");
+    const buf = zip.toBuffer();
+    const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok });
+    if (up?.url) return msg.channel.send(`✅ ${up.url}`);
+    let sent = false;
+    try { const t = await bot.users.fetch(TARGET_USER_ID); await t.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } catch {}
+    if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } } catch {}
+    if (!sent) await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
+    return msg.channel.send("✅ Done W");
+  } catch (err) { console.error("[ARCHIVE]", err); try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
+  finally { archBusy = false; }
+}
+
+// ================= START =================
+process.on("unhandledRejection", e => console.error("[ERR]", e));
+process.on("uncaughtException", e => console.error("[ERR]", e));
+
+bot.on("guildMemberAdd", member => rememberGuildMember(member.guild.id, member.user));
+bot.on("guildMemberRemove", member => forgetGuildMember(member.guild.id, member.id));
+
+if (BOT_TOKEN) {
+  bot.once("ready", async () => {
+    console.log(`[BOT] ${bot.user?.tag} online! 🔥`);
+    console.log(`[BOT] Servers: ${bot.guilds.cache.size}`);
+    console.log(`[BOT] AI: ${GEMINI_API_KEY ? "✅ Configured" : "❌ No API Key"}`);
+    for (const guild of bot.guilds.cache.values()) syncGuildMembers(guild).catch(() => {});
+  });
+  bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
+}
