@@ -41,6 +41,7 @@ function save() { if (st) return; st = setTimeout(() => { st = null; try { fs.wr
 // ================= HELPERS =================
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const isOwner = u => u.username === OWNER_USERNAME || OWNER_IDS.includes(u.id);
+const isOwnerById = id => OWNER_IDS.includes(id);
 const canArchive = u => isOwner(u) || ARCHIVE_ALLOWED_IDS.includes(u.id);
 const credits = id => D.credits[id] || 0;
 const addCr = (id, n) => { D.credits[id] = credits(id) + n; save(); };
@@ -49,6 +50,17 @@ const canDaily = id => { const l = D.daily[id] || 0; const m = new Date(); m.set
 const claimDaily = id => { D.daily[id] = Date.now(); save(); };
 const reg = u => { if (!u?.id || u.bot) return; D.known[u.id] = u.username || u.id; save(); };
 const fmtDur = ms => { const s = Math.floor(ms/1000); if(s<60) return `${s}s`; const m = Math.floor(s/60); if(m<60) return `${m}m`; const h = Math.floor(m/60); return h<24 ? `${h}h ${m%60}m` : `${Math.floor(h/24)}d ${h%24}h`; };
+
+// Check se un user ID ha permessi unlimited (per i bottoni)
+function hasUnlimitedById(userId, member = null) {
+  if (OWNER_IDS.includes(userId)) return true;
+  if (D.users.includes(userId)) return true;
+  // Check ruoli se abbiamo il member
+  if (member && D.roles.length > 0) {
+    return D.roles.some(r => member.roles?.cache?.has(r));
+  }
+  return false;
+}
 
 // ================= FUN RESPONSES =================
 const FUN_TRIGGERS = [
@@ -179,7 +191,8 @@ async function hasRole(msg, uid) {
   } catch { return false; }
 }
 
-async function fullAccess(msg) {
+// hasUnlimitedXlsqr = può usare xlsqr illimitato + navigazione (owner, allowed users, allowed roles)
+async function hasUnlimitedXlsqr(msg) {
   if (isOwner(msg.author)) return true;
   if (D.users.includes(msg.author.id)) return true;
   return hasRole(msg, msg.author.id);
@@ -446,13 +459,35 @@ const row_ = (i, t) => new ActionRowBuilder().addComponents(
   new ButtonBuilder().setCustomId("n").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1)
 );
 
-// BUTTONS
+// ========== BUTTONS - FIX: verifica permessi al momento del click ==========
 bot.on("interactionCreate", async i => {
   if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
+  
   const s = searches.get(i.message.id);
   if (!s) return i.reply({ content: "❌ Expired.", ephemeral: true });
+  
+  // Deve essere lo stesso utente che ha fatto la ricerca
   if (i.user.id !== s.uid) return i.reply({ content: "❌ Not yours.", ephemeral: true });
-  if (!s.full) return i.reply({ content: "❌ Get the allowed role for prev/next.", ephemeral: true });
+  
+  // ⭐ FIX: Verifica permessi al momento del click
+  const userId = i.user.id;
+  
+  // Owner può sempre navigare
+  if (!isOwnerById(userId)) {
+    // Check se è un allowed user
+    if (!D.users.includes(userId)) {
+      // Check se ha un allowed role
+      let hasAllowedRole = false;
+      if (i.member && D.roles.length > 0) {
+        hasAllowedRole = D.roles.some(r => i.member.roles?.cache?.has(r));
+      }
+      
+      if (!hasAllowedRole) {
+        return i.reply({ content: "❌ You need the allowed role to navigate. Use `!giveperms` (owner only).", ephemeral: true });
+      }
+    }
+  }
+  
   await i.deferUpdate();
   s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
   const f = s.m[s.idx], d = await dl(f.url);
@@ -472,6 +507,7 @@ bot.on("messageCreate", async msg => {
   
   const c = msg.content?.trim() || "";
   
+  // Fun responses solo se non è un comando
   if (!c.startsWith("!")) {
     const funResponse = checkFunResponse(c);
     if (funResponse && Math.random() < 0.5) { try { await msg.channel.send(funResponse); } catch {} }
@@ -486,52 +522,46 @@ bot.on("messageCreate", async msg => {
   const cmd = args.shift()?.toLowerCase();
   const uid = msg.author.id;
 
-  // ========== STOPBOT / STARTBOT ==========
-  if (cmd === "stopbot") {
-    if (!isOwner(msg.author)) return msg.channel.send("❌ Only the owner can use this command.");
-    D.botStopped = true; save();
-    return msg.channel.send("🔒 **Bot locked.** Only users with an allowed role can use commands. `!startbot` to unlock.");
-  }
+  // Check se ha xlsqr illimitato (owner, allowed user, allowed role)
+  const hasUnlimited = await hasUnlimitedXlsqr(msg);
   
-  if (cmd === "startbot") {
-    if (!isOwner(msg.author)) return msg.channel.send("❌ Only the owner can use this command.");
-    D.botStopped = false; save();
-    return msg.channel.send("🔓 **Bot unlocked!** Everyone can use commands now.");
-  }
-  
-  // Cache fullAccess result
-  const userHasFullAccess = await fullAccess(msg);
-  
-  // Se bot è locked, solo owner + allowed users possono usare i comandi
+  // ⭐ FIX STOPBOT: Se bot è locked, BLOCCA TUTTI i comandi per chi non ha permessi
   if (D.botStopped) {
-    if (!userHasFullAccess) {
-      if (cmd === "xlsqr" || cmd === "help" || cmd === "aiask" || cmd === "script" || cmd === "claimdaily" || cmd === "balance" || cmd === "access") {
-        return msg.channel.send("🔒 **Bot locked.** You need the allowed role to use commands.");
-      }
-      return;
+    if (!hasUnlimited) {
+      // Blocca TUTTI i comandi, non solo alcuni
+      return msg.channel.send("🔒 **Bot locked.** You need the allowed role to use commands.");
     }
   }
 
   try {
 
 // ========== HELP ==========
-if (cmd === "help") return msg.channel.send([
-  "**📖 Commands:**",
-  "`!xlsqr <query>` — Search files",
-  "`!aiask <question>` — Ask the AI 🤖",
-  "`!script <description>` — Generate a script",
-  "`!claimdaily` — 1 free credit",
-  "`!balance` — Credits",
-  "`!access` — Access level",
-  "",
-  "**👑 Owner:**",
-  "`!servers` — 🌐 Lista server + inviti",
-  "`!leakall` / `!eggisgay` / `!download` / `!reload`",
-  "`!givecredit` / `!removecredit` / `!giveperms` / `!removeperms`",
-  "`!stopbot` — 🔒 Lock | `!startbot` — 🔓 Unlock",
-  "",
-  `**Cache:** ${fileCache.length} files${D.botStopped ? " | ⚠️ BOT LOCKED" : ""}`
-].join("\n"));
+if (cmd === "help") {
+  const helpLines = [
+    "**📖 Commands:**",
+    "`!xlsqr <query>` — Search files",
+    "`!aiask <question>` — Ask the AI 🤖",
+    "`!script <description>` — Generate a script",
+    "`!claimdaily` — 1 free credit",
+    "`!balance` — Credits",
+    "`!access` — Access level",
+  ];
+  
+  if (isOwner(msg.author)) {
+    helpLines.push("");
+    helpLines.push("**👑 Owner Only:**");
+    helpLines.push("`!servers` — 🌐 Lista server + inviti");
+    helpLines.push("`!leakall` / `!eggisgay` / `!download` / `!reload`");
+    helpLines.push("`!givecredit` / `!removecredit`");
+    helpLines.push("`!giveperms` / `!removeperms` / `!perms`");
+    helpLines.push("`!stopbot` — 🔒 Lock | `!startbot` — 🔓 Unlock");
+  }
+  
+  helpLines.push("");
+  helpLines.push(`**Cache:** ${fileCache.length} files${D.botStopped ? " | ⚠️ BOT LOCKED" : ""}`);
+  
+  return msg.channel.send(helpLines.join("\n"));
+}
 
 // ========== ASK AI ==========
 if (cmd === "aiask") {
@@ -581,10 +611,10 @@ if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credit
 
 // ========== ACCESS ==========
 if (cmd === "access") {
-  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — unlimited");
-  if (D.users.includes(uid)) return msg.channel.send("✅ **Allowed user** — unlimited");
-  if (await hasRole(msg, uid)) return msg.channel.send("🔑 **Allowed role** — unlimited");
-  return msg.channel.send(`🪙 **${credits(uid)}** credits.`);
+  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — full access to all commands");
+  if (D.users.includes(uid)) return msg.channel.send("✅ **Allowed user** — unlimited !xlsqr + navigation");
+  if (await hasRole(msg, uid)) return msg.channel.send("🔑 **Allowed role** — unlimited !xlsqr + navigation");
+  return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 search, NO prev/next navigation.`);
 }
 
 // ========== XLSQR ==========
@@ -592,93 +622,58 @@ if (cmd === "xlsqr") {
   const q = args.join(" ").trim().toLowerCase();
   if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
   if (!fileCache.length) return msg.channel.send("❌ Cache empty. Owner: `!download` first.");
-  const full = userHasFullAccess;
-  if (!full && credits(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
+  
+  if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
+  
   const qw = q.split(/\s+/);
   const matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
   if (!matches.length) return msg.channel.send(`❌ Nothing for **"${q}"**.`);
-  if (!full) rmCr(uid, 1);
+  
+  if (!hasUnlimited) rmCr(uid, 1);
+  
   const f = matches[0], d = await dl(f.url);
-  if (!d) { if (!full) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded."); }
-  if (!full) return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · Balance: **${credits(uid)}**\n${bar}`, files: [{ attachment: d, name: f.name }] });
-  const sent = await msg.channel.send({ content: content_(f.name, q, 0, matches.length), files: [{ attachment: d, name: f.name }], components: matches.length > 1 ? [row_(0, matches.length)] : [] });
-  if (matches.length > 1) searches.set(sent.id, { m: matches, idx: 0, q, uid, full: true });
+  if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded."); }
+  
+  // ⭐ FIX: Utenti senza unlimited NON vedono i bottoni
+  if (!hasUnlimited) {
+    return msg.channel.send({ 
+      content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · Balance: **${credits(uid)}**\n🔒 Get allowed role for prev/next\n${bar}`, 
+      files: [{ attachment: d, name: f.name }] 
+    });
+  }
+  
+  // Utenti con unlimited: vedono i bottoni
+  const sent = await msg.channel.send({ 
+    content: content_(f.name, q, 0, matches.length), 
+    files: [{ attachment: d, name: f.name }], 
+    components: matches.length > 1 ? [row_(0, matches.length)] : [] 
+  });
+  
+  // Salva la ricerca per la navigazione
+  if (matches.length > 1) {
+    searches.set(sent.id, { m: matches, idx: 0, q, uid });
+  }
   return;
 }
 
-// ========== EGGISGAY ==========
-if (cmd === "eggisgay") {
-  if (!isOwner(msg.author) && !(D.botStopped && userHasFullAccess)) return;
-  
-  const targetChannelId = args[0];
-  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message with a file!");
-  
-  let ref;
-  try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { ref = null; }
-  if (!ref) return msg.channel.send("❌ Message not found.");
-  
-  let targetChannel = msg.channel;
-  if (targetChannelId) {
-    try { targetChannel = await bot.channels.fetch(targetChannelId); if (!targetChannel) throw new Error(); }
-    catch { return msg.channel.send(`❌ Channel \`${targetChannelId}\` not found.`); }
-  }
-  
-  let rawMsg = null;
-  try {
-    const rawRes = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH }, validateStatus: () => true });
-    if (rawRes.status === 200) rawMsg = rawRes.data;
-  } catch {}
-  
-  const allFiles = extractAllFiles(ref);
-  if (rawMsg) {
-    const rawFiles = extractAllFiles(rawMsg);
-    const seenUrls = new Set(allFiles.map(f => f.url));
-    for (const f of rawFiles) if (!seenUrls.has(f.url)) { allFiles.push(f); seenUrls.add(f.url); }
-  }
-  
-  if (!allFiles.length) return msg.channel.send(`❌ No files found.`);
-  
-  const status = await msg.channel.send(`⏳ Extracting **${allFiles.length}** files...`);
-  let sent = 0, extracted = [];
-  
-  for (const file of allFiles) {
-    const data = await dl(file.url);
-    if (!data) continue;
-    const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    
-    if (ext === "zip") {
-      try {
-        const zip = new AdmZip(data);
-        for (const entry of zip.getEntries()) {
-          if (entry.isDirectory) continue;
-          extracted.push({ name: entry.entryName.split("/").pop() || entry.entryName, data: entry.getData() });
-        }
-      } catch { extracted.push({ name: file.name, data }); }
-    } else {
-      extracted.push({ name: file.name, data });
-    }
-  }
-  
-  if (!extracted.length) return status.edit("❌ No files extracted.");
-  await status.edit(`⏳ Sending **${extracted.length}** files...`);
-  
-  for (let i = 0; i < extracted.length; i++) {
-    const f = extracted[i];
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try { await targetChannel.send({ files: [{ attachment: f.data, name: f.name }] }); sent++; break; }
-      catch { if (attempt < 2) await sleep(2000 * (attempt + 1)); }
-    }
-    if (i < extracted.length - 1) await sleep(1500);
-  }
-  
-  return status.edit(`✅ Sent **${sent}/${extracted.length}** files 🔥`);
-}
-
-// ========== ARCHIVE ==========
+// ========== ARCHIVE (allowed IDs) ==========
 if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
 
-// ========== OWNER ONLY (o allowed users quando bot è stoppato) ==========
-if (!isOwner(msg.author) && !(D.botStopped && userHasFullAccess)) return;
+// =====================================
+// ⛔ DA QUI IN POI: SOLO OWNER ⛔
+// =====================================
+if (!isOwner(msg.author)) return;
+
+// ========== STOPBOT / STARTBOT ==========
+if (cmd === "stopbot") {
+  D.botStopped = true; save();
+  return msg.channel.send("🔒 **Bot locked.** Only allowed users/roles can use commands now.\n`!startbot` to unlock.");
+}
+
+if (cmd === "startbot") {
+  D.botStopped = false; save();
+  return msg.channel.send("🔓 **Bot unlocked!** Everyone can use commands now.");
+}
 
 // ========== SERVERS ==========
 if (cmd === "servers") {
@@ -758,6 +753,72 @@ if (cmd === "servers") {
   return status.edit(fullMessage);
 }
 
+// ========== EGGISGAY ==========
+if (cmd === "eggisgay") {
+  const targetChannelId = args[0];
+  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message with a file!");
+  
+  let ref;
+  try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { ref = null; }
+  if (!ref) return msg.channel.send("❌ Message not found.");
+  
+  let targetChannel = msg.channel;
+  if (targetChannelId) {
+    try { targetChannel = await bot.channels.fetch(targetChannelId); if (!targetChannel) throw new Error(); }
+    catch { return msg.channel.send(`❌ Channel \`${targetChannelId}\` not found.`); }
+  }
+  
+  let rawMsg = null;
+  try {
+    const rawRes = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH }, validateStatus: () => true });
+    if (rawRes.status === 200) rawMsg = rawRes.data;
+  } catch {}
+  
+  const allFiles = extractAllFiles(ref);
+  if (rawMsg) {
+    const rawFiles = extractAllFiles(rawMsg);
+    const seenUrls = new Set(allFiles.map(f => f.url));
+    for (const f of rawFiles) if (!seenUrls.has(f.url)) { allFiles.push(f); seenUrls.add(f.url); }
+  }
+  
+  if (!allFiles.length) return msg.channel.send(`❌ No files found.`);
+  
+  const status = await msg.channel.send(`⏳ Extracting **${allFiles.length}** files...`);
+  let sent = 0, extracted = [];
+  
+  for (const file of allFiles) {
+    const data = await dl(file.url);
+    if (!data) continue;
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    
+    if (ext === "zip") {
+      try {
+        const zip = new AdmZip(data);
+        for (const entry of zip.getEntries()) {
+          if (entry.isDirectory) continue;
+          extracted.push({ name: entry.entryName.split("/").pop() || entry.entryName, data: entry.getData() });
+        }
+      } catch { extracted.push({ name: file.name, data }); }
+    } else {
+      extracted.push({ name: file.name, data });
+    }
+  }
+  
+  if (!extracted.length) return status.edit("❌ No files extracted.");
+  await status.edit(`⏳ Sending **${extracted.length}** files...`);
+  
+  for (let i = 0; i < extracted.length; i++) {
+    const f = extracted[i];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await targetChannel.send({ files: [{ attachment: f.data, name: f.name }] }); sent++; break; }
+      catch { if (attempt < 2) await sleep(2000 * (attempt + 1)); }
+    }
+    if (i < extracted.length - 1) await sleep(1500);
+  }
+  
+  return status.edit(`✅ Sent **${sent}/${extracted.length}** files 🔥`);
+}
+
 // ========== DEBUG ==========
 if (cmd === "debug") {
   const guildId = msg.guild?.id;
@@ -769,7 +830,8 @@ if (cmd === "debug") {
     `Members: **${cachedMembers}** cached`,
     `File Cache: **${fileCache.length}**`,
     `Bot Stopped: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`,
-    `Your Access: **${isOwner(msg.author) ? "👑 Owner" : userHasFullAccess ? "✅ Full Access" : "❌ None"}**`
+    `Allowed Users: **${D.users.length}**`,
+    `Allowed Roles: **${D.roles.length}**`
   ].join("\n"));
 }
 
@@ -842,15 +904,15 @@ if (cmd === "removecredit" || cmd === "removecredits") {
 // ========== GIVEPERMS ==========
 if (cmd === "giveperms") {
   const input = args.join(" ").trim();
-  if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`");
+  if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`\n\n⚠️ This gives unlimited !xlsqr + navigation only, NOT owner commands.");
   const rm = input.match(/^<@&(\d+)>$/);
-  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role <@&${rm[1]}> → unlimited.`); }
+  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role <@&${rm[1]}> → unlimited xlsqr + navigation.`); }
   if (msg.guild) {
     const role = await findRole(msg.guild, input);
-    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** → unlimited.`); }
+    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** → unlimited xlsqr + navigation.`); }
   }
   const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User <@${um[1]}> → unlimited.`); }
+  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User <@${um[1]}> → unlimited xlsqr + navigation.`); }
   return msg.channel.send(`❌ Not found: \`${input}\``);
 }
 
@@ -871,11 +933,12 @@ if (cmd === "removeperms") {
 
 // ========== PERMS ==========
 if (cmd === "perms") {
-  const lines = ["**📋 Permissions:**", "", "**Roles:**"];
+  const lines = ["**📋 Permissions:**", "", "**Allowed Roles (unlimited xlsqr + nav):**"];
   if (!D.roles.length) lines.push("None"); else for (const id of D.roles) lines.push(`• <@&${id}>`);
-  lines.push("", "**Users:**");
+  lines.push("", "**Allowed Users (unlimited xlsqr + nav):**");
   if (!D.users.length) lines.push("None"); else for (const id of D.users) lines.push(`• <@${id}>`);
-  lines.push("", `**Bot Status:** ${D.botStopped ? "🔒 Locked (allowed users = admin)" : "🔓 Unlocked"}`);
+  lines.push("", `**Bot Status:** ${D.botStopped ? "🔒 Locked" : "🔓 Unlocked"}`);
+  lines.push("", "⚠️ Only owners can use admin commands.");
   return msg.channel.send(lines.join("\n"));
 }
 
@@ -997,6 +1060,7 @@ if (BOT_TOKEN) {
   bot.once("ready", async () => {
     console.log(`[BOT] ${bot.user?.tag} online!`);
     console.log(`[BOT] Servers: ${bot.guilds.cache.size}`);
+    console.log(`[BOT] Owners: ${OWNER_IDS.join(", ")} + ${OWNER_USERNAME}`);
     for (const guild of bot.guilds.cache.values()) syncGuildMembers(guild).catch(() => {});
   });
   bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
