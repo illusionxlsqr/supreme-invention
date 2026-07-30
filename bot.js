@@ -7,7 +7,7 @@ const path = require("path");
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "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";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
@@ -319,7 +319,7 @@ async function scanChannel(chId, statusMsg = null) {
   return all;
 }
 
-// ================= AI AGENT =================
+// ================= AI - GROQ ONLY =================
 async function loadFileContentForAI(file, maxSize = 50000) {
   if (fileContents.has(file.url)) return fileContents.get(file.url);
   const data = await dl(file.url);
@@ -351,10 +351,10 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
   return contents;
 }
 
-// ⭐ AI FUNCTION - FIXED v3
+// ⭐ AI FUNCTION - GROQ ONLY
 async function askAI(userId, question, relevantFiles = []) {
-  if (!GEMINI_API_KEY) {
-    return "yo bro, l'AI non è configurata 💀 manca GEMINI_API_KEY";
+  if (!GROQ_API_KEY) {
+    return "yo bro, manca GROQ_API_KEY 💀";
   }
   
   let fileContext = "";
@@ -366,61 +366,58 @@ async function askAI(userId, question, relevantFiles = []) {
   if (!D.conversations[userId]) D.conversations[userId] = [];
   const history = D.conversations[userId].slice(-6);
   
-  const systemPrompt = `Sei XLSQR Bot, un bot Discord figo. Rispondi in modo casual usando slang tipo "bro", "fra", "ngl", "fr", "no cap", "💀", "🔥", "W". Rispondi nella lingua dell'utente. Usa emoji. Se chiede codice, scrivi codice funzionante.${fileContext}`;
+  const systemPrompt = `Sei XLSQR Bot, un bot Discord figo e street. Rispondi SEMPRE in modo casual usando slang tipo:
+- "bro", "fra", "gang", "dawg"
+- "ngl" (not gonna lie), "fr" (for real), "no cap", "lowkey", "highkey"
+- "💀", "🔥", "W", "L", "😭", "🗿"
+- "ayo", "bet", "real", "facts", "on god"
+- "bruh", "deadass", "straight up"
 
-  const contents = [];
-  contents.push({ role: "user", parts: [{ text: systemPrompt }] });
-  contents.push({ role: "model", parts: [{ text: "yo sono XLSQR Bot, dimmi tutto bro 🔥" }] });
-  
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }]
-    });
-  }
-  contents.push({ role: "user", parts: [{ text: question }] });
+Rispondi nella stessa lingua dell'utente (italiano o inglese).
+Usa emoji spesso.
+Se ti chiedono codice, scrivi codice funzionante e commentato.
+Sii amichevole e divertente.${fileContext}`;
 
-  const body = {
-    contents,
-    generationConfig: { temperature: 0.9, maxOutputTokens: 2048 },
-    safetySettings: [
-      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-    ]
-  };
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history,
+    { role: "user", content: question }
+  ];
 
-  // ⭐ MODELLI AGGIORNATI 2025
+  // Modelli Groq in ordine di preferenza
   const MODELS = [
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro-latest",
-    "gemini-exp-1206"
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it"
   ];
   
   let lastErr = null;
   
   for (const model of MODELS) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-      console.log(`[AI] Trying ${model}...`);
+      console.log(`[AI] Trying Groq ${model}...`);
       
-      const res = await axios.post(url, body, {
-        headers: { "Content-Type": "application/json" },
+      const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+        model,
+        messages,
+        temperature: 0.9,
+        max_tokens: 2048
+      }, {
+        headers: {
+          "Authorization": `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
         timeout: 30000,
         validateStatus: () => true
       });
       
-      if (res.status === 404) { lastErr = `${model} not found`; continue; }
-      if (res.status === 429) { lastErr = "rate limited"; await sleep(2000); continue; }
-      if (res.status === 403 || res.status === 401) return "bro l'API key non è valida 💀";
-      
-      if (res.status === 200 && res.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-        let reply = res.data.candidates[0].content.parts[0].text.trim();
-        console.log(`[AI] ✅ ${model} responded!`);
+      if (res.status === 200 && res.data?.choices?.[0]?.message?.content) {
+        const reply = res.data.choices[0].message.content.trim();
+        console.log(`[AI] ✅ Groq ${model} responded!`);
         
+        // Salva conversazione
         D.conversations[userId].push({ role: "user", content: question });
         D.conversations[userId].push({ role: "assistant", content: reply });
         if (D.conversations[userId].length > 20) D.conversations[userId] = D.conversations[userId].slice(-20);
@@ -429,13 +426,27 @@ async function askAI(userId, question, relevantFiles = []) {
         return reply;
       }
       
-      if (res.data?.candidates?.[0]?.finishReason === "SAFETY") return "bro messaggio bloccato per safety 💀";
-      lastErr = res.data?.error?.message || `${model} status ${res.status}`;
+      if (res.status === 401) {
+        return "bro l'API key di Groq non è valida 💀";
+      }
       
-    } catch (e) { lastErr = e.message; }
+      if (res.status === 429) {
+        console.log(`[AI] Groq ${model} rate limited, trying next...`);
+        lastErr = "rate limited";
+        await sleep(1000);
+        continue;
+      }
+      
+      lastErr = res.data?.error?.message || `status ${res.status}`;
+      console.log(`[AI] Groq ${model} failed:`, lastErr);
+      
+    } catch (e) {
+      lastErr = e.message;
+      console.log(`[AI] Groq ${model} error:`, e.message);
+    }
   }
   
-  return `ayo bro, AI non risponde 💀 Error: ${lastErr || "unknown"}`;
+  return `ayo bro, Groq non risponde 💀 Error: ${lastErr || "unknown"}`;
 }
 
 // ================= UPLOAD =================
@@ -563,7 +574,7 @@ if (cmd === "help") {
   if (isOwner(msg.author)) {
     lines.push("", "**👑 Owner:**", "`!servers` `!leakall` `!download` `!reload`", "`!giveperms` `!removeperms` `!perms`", "`!stopbot` / `!startbot`");
   }
-  lines.push("", `Cache: ${fileCache.length}${D.botStopped ? " | 🔒 LOCKED" : ""}`);
+  lines.push("", `Cache: ${fileCache.length}${D.botStopped ? " | 🔒 LOCKED" : ""} | AI: Groq ⚡`);
   return msg.channel.send(lines.join("\n"));
 }
 
@@ -731,7 +742,7 @@ if (cmd === "debug") {
     `Bot: ${bot.user?.tag}`,
     `Servers: ${bot.guilds.cache.size}`,
     `Cache: ${fileCache.length}`,
-    `AI: ${GEMINI_API_KEY ? "✅" : "❌"}`,
+    `AI: Groq ⚡`,
     `Locked: ${D.botStopped ? "🔒" : "🔓"}`
   ].join("\n"));
 }
@@ -896,7 +907,7 @@ if (BOT_TOKEN) {
   bot.once("ready", async () => {
     console.log(`[BOT] ${bot.user?.tag} online! 🔥`);
     console.log(`[BOT] Servers: ${bot.guilds.cache.size}`);
-    console.log(`[BOT] AI: ${GEMINI_API_KEY ? "✅" : "❌"}`);
+    console.log(`[BOT] AI: Groq ⚡`);
     for (const guild of bot.guilds.cache.values()) syncGuildMembers(guild).catch(() => {});
   });
   bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
