@@ -35,8 +35,27 @@ try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8
 if (!D.guildMembers) D.guildMembers = {};
 if (!D.conversations) D.conversations = {};
 if (D.botStopped === undefined) D.botStopped = false;
+if (!D.users) D.users = [];
+if (!D.roles) D.roles = [];
+if (!D.credits) D.credits = {};
+
+// ⭐ FORCE SAVE on startup to ensure data persists
 let st = null;
-function save() { if (st) return; st = setTimeout(() => { st = null; try { fs.writeFileSync(DF, JSON.stringify(D)); } catch {} }, 500); }
+function save() { 
+  if (st) clearTimeout(st);
+  st = setTimeout(() => { 
+    st = null; 
+    try { 
+      fs.writeFileSync(DF, JSON.stringify(D, null, 2)); 
+      console.log("[DATA] Saved!");
+    } catch (e) { 
+      console.error("[DATA] Save failed:", e.message); 
+    } 
+  }, 300); 
+}
+
+// Save immediately on startup
+setTimeout(() => save(), 1000);
 
 // ================= HELPERS =================
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -60,25 +79,24 @@ function hasUnlimitedById(userId, member = null) {
   return false;
 }
 
-// ================= FUN RESPONSES =================
+// ================= FUN RESPONSES (ANGRY) =================
 const FUN_TRIGGERS = [
-  { patterns: [/\bstfu\b/i, /shut\s*up/i, /zitto/i], responses: ["stfu 🤫", "STFU NIGGA", "shut yo ass up 💀", "silenzio fra", "🤐"] },
-  { patterns: [/\baybau\b/i, /ay\s*bau/i], responses: ["AYBAU 🔥", "aybauuuuu", "AY BAU BAU 🐕", "aybau gang"] },
-  { patterns: [/\bnga\b/i, /\bnigga\b/i], responses: ["nga 💀", "NGA WHAT", "bruh 💀", "ayo? 🤨"] },
-  { patterns: [/xlsqr/i, /xl\s*sqr/i], responses: ["XLSQR ON TOP 🔝", "Xlsqr supremacy 👑", "XLSQR > tutto", "xlsqr gang 🔥", "W XLSQR"] },
-  { patterns: [/\bgg\b/i, /good\s*game/i], responses: ["gg ez", "GG 🏆", "gg wp", "facile 😎"] },
-  { patterns: [/\bbruh\b/i], responses: ["bruh 💀", "BRUH", "bruh moment", "😐"] },
-  { patterns: [/\bcap\b/i, /\bno\s*cap\b/i], responses: ["no cap fr fr", "🧢?", "on god no cap", "facts"] },
-  { patterns: [/\bfr\b/i, /for\s*real/i], responses: ["fr fr", "on god fr", "real shit", "fax no printer 🖨️"] },
-  { patterns: [/\bw\b/i, /\bdub\b/i], responses: ["W", "massive W", "dub 🏆", "W moment"] },
-  { patterns: [/\bl\b/i, /\bL\b/], responses: ["L", "fat L", "L bozo 🤡", "ratio"] },
-  { patterns: [/ciao\s*bot/i, /hey\s*bot/i, /hi\s*bot/i], responses: ["yo wassup 👋", "ciao bro", "ehi 🔥", "sup"] },
-  { patterns: [/bot\s*(sei|è)\s*(gay|frocio)/i], responses: ["no u 💀", "mirror 🪞", "says the guy asking a bot 😂"] },
-  { patterns: [/grazie|thanks|thx/i], responses: ["np 🔥", "di nulla fra", "sempre 💪", "gotchu"] },
+  { patterns: [/\bstfu\b/i, /shut\s*up/i], responses: ["no u stfu 🖕", "shut yo dumbass up 💀", "make me bitch", "🤫 silence peasant"] },
+  { patterns: [/\baybau\b/i, /ay\s*bau/i], responses: ["AYBAU 🔥", "aybauuuuu mf", "AY BAU BAU 🐕"] },
+  { patterns: [/\bnga\b/i, /\bnigga\b/i], responses: ["💀", "bruh", "ayo? 🤨"] },
+  { patterns: [/xlsqr/i, /xl\s*sqr/i], responses: ["XLSQR ON TOP 🔝", "XLSQR > everything", "W XLSQR"] },
+  { patterns: [/\bgg\b/i], responses: ["gg ez clap", "too easy 😴", "gg i guess"] },
+  { patterns: [/\bbruh\b/i], responses: ["bruh 💀", "BRUH tf", "😐"] },
+  { patterns: [/ciao\s*bot/i, /hey\s*bot/i, /hi\s*bot/i], responses: ["tf you want 😒", "what now 🙄", "ugh what", "speak fast i'm busy"] },
+  { patterns: [/bot\s*(you|u).*(suck|gay|trash|bad)/i], responses: ["no u 💀", "mirror check 🪞", "says the mf asking a bot 😂", "cry about it"] },
+  { patterns: [/thanks|thx|thank/i], responses: ["whatever 🙄", "yeah yeah", "don't mention it... literally don't", "k"] },
+  { patterns: [/love.*bot|bot.*love/i], responses: ["ew 🤢", "i don't love u back", "weird flex but ok", "💀 cringe"] },
+  { patterns: [/good\s*bot/i], responses: ["i know 😎", "obviously", "tell me something i don't know", "W me"] },
+  { patterns: [/bad\s*bot/i], responses: ["stfu 🖕", "cry more", "don't care + didn't ask", "L take"] },
 ];
 
-const RANDOM_CHANCE = 0.03;
-const RANDOM_MESSAGES = ["xlsqr on top btw 🔝", "💀", "fr fr", "no cap", "🔥", "W", "real", "aybau"];
+const RANDOM_CHANCE = 0.02;
+const RANDOM_MESSAGES = ["💀", "bruh", "🗿", "ratio", "L", "cope"];
 
 function checkFunResponse(content) {
   const lower = content.toLowerCase();
@@ -310,7 +328,7 @@ async function scanChannel(chId, statusMsg = null) {
       }
     }
     if (statusMsg && batches % 10 === 0) {
-      try { await statusMsg.edit(`⏳ Scanning... ${batches * 100}+ messages, ${all.length} .txt files found...`); } catch {}
+      try { await statusMsg.edit(`⏳ scanning... ${batches * 100}+ msgs, ${all.length} files found`); } catch {}
     }
     last = msgs[msgs.length - 1].id;
     if (msgs.length < 100) break;
@@ -319,7 +337,7 @@ async function scanChannel(chId, statusMsg = null) {
   return all;
 }
 
-// ================= AI - GROQ ONLY =================
+// ================= AI - GROQ (ANGRY MODE) =================
 async function loadFileContentForAI(file, maxSize = 50000) {
   if (fileContents.has(file.url)) return fileContents.get(file.url);
   const data = await dl(file.url);
@@ -351,32 +369,39 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
   return contents;
 }
 
-// ⭐ AI FUNCTION - GROQ ONLY
+// ⭐ AI FUNCTION - ANGRY MODE
 async function askAI(userId, question, relevantFiles = []) {
   if (!GROQ_API_KEY) {
-    return "yo bro, manca GROQ_API_KEY 💀";
+    return "bruh GROQ_API_KEY is missing, fix it dumbass 💀";
   }
   
   let fileContext = "";
   if (relevantFiles.length > 0) {
-    fileContext = "\n\nFile disponibili:\n";
+    fileContext = "\n\nAvailable files:\n";
     for (const f of relevantFiles) fileContext += `📄 ${f.name}:\n${f.content.slice(0, 3000)}\n\n`;
   }
   
   if (!D.conversations[userId]) D.conversations[userId] = [];
   const history = D.conversations[userId].slice(-6);
   
-  const systemPrompt = `Sei XLSQR Bot, un bot Discord figo e street. Rispondi SEMPRE in modo casual usando slang tipo:
-- "bro", "fra", "gang", "dawg"
-- "ngl" (not gonna lie), "fr" (for real), "no cap", "lowkey", "highkey"
-- "💀", "🔥", "W", "L", "😭", "🗿"
-- "ayo", "bet", "real", "facts", "on god"
-- "bruh", "deadass", "straight up"
+  const systemPrompt = `You are XLSQR Bot, an angry and sarcastic Discord bot. You're annoyed by everything but you still help people (reluctantly).
 
-Rispondi nella stessa lingua dell'utente (italiano o inglese).
-Usa emoji spesso.
-Se ti chiedono codice, scrivi codice funzionante e commentato.
-Sii amichevole e divertente.${fileContext}`;
+Your personality:
+- Angry, sarcastic, annoyed, impatient
+- Use slang: "bruh", "tf", "stfu", "dumbass", "idiot", "mf", "💀", "🙄", "😒"
+- Insult users lightly but still answer their questions
+- Act like helping them is a huge burden
+- Use phrases like: "ugh fine", "whatever", "are you stupid or what", "obviously", "use your brain"
+- Still be helpful and create what they ask for
+- If something is ACTUALLY impossible (like hacking NASA, making real money), refuse and roast them
+- For code/scripts: write working code but complain about it
+- Keep responses relatively short unless they need detailed code
+
+IMPORTANT: You MUST still help with requests. Just be angry about it.
+If they ask for code, write the code (angrily).
+If they ask questions, answer them (rudely).
+
+Reply in the same language as the user (English or Italian but angry).${fileContext}`;
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -384,7 +409,6 @@ Sii amichevole e divertente.${fileContext}`;
     { role: "user", content: question }
   ];
 
-  // Modelli Groq in ordine di preferenza
   const MODELS = [
     "llama-3.1-70b-versatile",
     "llama-3.1-8b-instant",
@@ -417,7 +441,6 @@ Sii amichevole e divertente.${fileContext}`;
         const reply = res.data.choices[0].message.content.trim();
         console.log(`[AI] ✅ Groq ${model} responded!`);
         
-        // Salva conversazione
         D.conversations[userId].push({ role: "user", content: question });
         D.conversations[userId].push({ role: "assistant", content: reply });
         if (D.conversations[userId].length > 20) D.conversations[userId] = D.conversations[userId].slice(-20);
@@ -427,26 +450,24 @@ Sii amichevole e divertente.${fileContext}`;
       }
       
       if (res.status === 401) {
-        return "bro l'API key di Groq non è valida 💀";
+        return "bruh the Groq API key is invalid, someone fucked up 💀";
       }
       
       if (res.status === 429) {
-        console.log(`[AI] Groq ${model} rate limited, trying next...`);
+        console.log(`[AI] Groq ${model} rate limited`);
         lastErr = "rate limited";
         await sleep(1000);
         continue;
       }
       
       lastErr = res.data?.error?.message || `status ${res.status}`;
-      console.log(`[AI] Groq ${model} failed:`, lastErr);
       
     } catch (e) {
       lastErr = e.message;
-      console.log(`[AI] Groq ${model} error:`, e.message);
     }
   }
   
-  return `ayo bro, Groq non risponde 💀 Error: ${lastErr || "unknown"}`;
+  return `bruh Groq is dead rn 💀 error: ${lastErr || "unknown"}`;
 }
 
 // ================= UPLOAD =================
@@ -478,8 +499,8 @@ const row_ = (i, t) => new ActionRowBuilder().addComponents(
 bot.on("interactionCreate", async i => {
   if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
   const s = searches.get(i.message.id);
-  if (!s) return i.reply({ content: "❌ Expired bro.", ephemeral: true });
-  if (i.user.id !== s.uid) return i.reply({ content: "❌ Not yours gang.", ephemeral: true });
+  if (!s) return i.reply({ content: "❌ expired, too slow 💀", ephemeral: true });
+  if (i.user.id !== s.uid) return i.reply({ content: "❌ not yours idiot", ephemeral: true });
   
   const userId = i.user.id;
   if (!isOwnerById(userId)) {
@@ -489,7 +510,7 @@ bot.on("interactionCreate", async i => {
         hasAllowedRole = D.roles.some(r => i.member.roles?.cache?.has(r));
       }
       if (!hasAllowedRole) {
-        return i.reply({ content: "❌ You need the allowed role to navigate bro 💀", ephemeral: true });
+        return i.reply({ content: "❌ you don't have perms to navigate, cope 💀", ephemeral: true });
       }
     }
   }
@@ -497,7 +518,7 @@ bot.on("interactionCreate", async i => {
   await i.deferUpdate();
   s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
   const f = s.m[s.idx], d = await dl(f.url);
-  if (!d) return i.followUp({ content: "❌ Download failed fra.", ephemeral: true });
+  if (!d) return i.followUp({ content: "❌ download failed, L", ephemeral: true });
   await i.editReply({ content: content_(f.name, s.q, s.idx, s.m.length), files: [{ attachment: d, name: f.name }], components: [row_(s.idx, s.m.length)] });
 });
 
@@ -514,7 +535,7 @@ bot.on("messageCreate", async msg => {
   const c = msg.content?.trim() || "";
   const uid = msg.author.id;
   
-  // ⭐ CHECK SE MENZIONA IL BOT O RISPONDE AL BOT
+  // ⭐ CHECK IF MENTIONS BOT OR REPLIES TO BOT
   const mentionsBot = msg.mentions.has(bot.user.id);
   let repliesToBot = false;
   if (msg.reference?.messageId) {
@@ -526,7 +547,7 @@ bot.on("messageCreate", async msg => {
   
   if (mentionsBot || repliesToBot) {
     let question = c.replace(/<@!?\d+>/g, "").trim();
-    if (!question) return msg.reply("yo wassup bro? dimmi qualcosa 🔥");
+    if (!question) return msg.reply("tf you want? say something 😒");
     
     msg.channel.sendTyping().catch(() => {});
     const relevantFiles = await getRelevantFilesContent(question, 2);
@@ -554,7 +575,7 @@ bot.on("messageCreate", async msg => {
   const hasUnlimited = await hasUnlimitedXlsqr(msg);
   
   if (D.botStopped && !hasUnlimited) {
-    return msg.channel.send("🔒 **Bot locked bro.** You need the allowed role.");
+    return msg.channel.send("🔒 **bot locked.** you don't have perms, L");
   }
 
   try {
@@ -562,26 +583,26 @@ bot.on("messageCreate", async msg => {
 // ========== HELP ==========
 if (cmd === "help") {
   const lines = [
-    "**📖 Commands:**",
-    "`!xlsqr <query>` — Search files",
-    "`!aiask <question>` — Ask AI 🤖",
-    "`!script <desc>` — Generate script",
-    "`!claimdaily` — 1 free credit",
+    "**📖 commands (read carefully idiot):**",
+    "`!xlsqr <query>` — search files",
+    "`!aiask <question>` — ask AI (i'll answer... annoyed)",
+    "`!script <desc>` — generate script",
+    "`!claimdaily` — get 1 free credit",
     "`!balance` / `!access`",
     "",
-    "**💬 Chat:** Menziona @bot o rispondi per parlare con l'AI!"
+    "**💬 chat:** mention me or reply to talk (but make it quick)"
   ];
   if (isOwner(msg.author)) {
-    lines.push("", "**👑 Owner:**", "`!servers` `!leakall` `!download` `!reload`", "`!giveperms` `!removeperms` `!perms`", "`!stopbot` / `!startbot`");
+    lines.push("", "**👑 owner stuff:**", "`!servers` `!leakall` `!download` `!reload`", "`!giveperms` `!removeperms` `!perms`", "`!stopbot` / `!startbot`");
   }
-  lines.push("", `Cache: ${fileCache.length}${D.botStopped ? " | 🔒 LOCKED" : ""} | AI: Groq ⚡`);
+  lines.push("", `cache: ${fileCache.length}${D.botStopped ? " | 🔒 LOCKED" : ""} | AI: Groq ⚡`);
   return msg.channel.send(lines.join("\n"));
 }
 
 // ========== AIASK ==========
 if (cmd === "aiask" || cmd === "ai" || cmd === "ask") {
   const question = args.join(" ").trim();
-  if (!question) return msg.channel.send("❌ `!aiask <domanda>` bro");
+  if (!question) return msg.channel.send("❌ `!aiask <question>` are you dumb?");
   msg.channel.sendTyping().catch(() => {});
   const relevantFiles = await getRelevantFilesContent(question, 3);
   const response = await askAI(uid, question, relevantFiles);
@@ -594,12 +615,12 @@ if (cmd === "aiask" || cmd === "ai" || cmd === "ask") {
 // ========== SCRIPT ==========
 if (cmd === "script" || cmd === "genera" || cmd === "code") {
   const desc = args.join(" ").trim();
-  if (!desc) return msg.channel.send("❌ `!script <description>` bro");
+  if (!desc) return msg.channel.send("❌ `!script <description>` use your brain");
   msg.channel.sendTyping().catch(() => {});
-  const prompt = `Crea uno script completo per: ${desc}\n\nRequisiti: codice pulito, commentato, error handling, istruzioni installazione.`;
+  const prompt = `Create a complete working script for: ${desc}\n\nRequirements: clean code, comments, error handling, installation instructions. And hurry up.`;
   const response = await askAI(uid, prompt, []);
   if (response.length > 1900) {
-    return msg.channel.send({ content: "📝 Script:", files: [{ attachment: Buffer.from(response, "utf8"), name: "script.md" }] });
+    return msg.channel.send({ content: "📝 here's your script, you're welcome 🙄", files: [{ attachment: Buffer.from(response, "utf8"), name: "script.md" }] });
   }
   return msg.channel.send(response);
 }
@@ -607,47 +628,47 @@ if (cmd === "script" || cmd === "genera" || cmd === "code") {
 // ========== CLEARCONV ==========
 if (cmd === "clearconv" || cmd === "resetai" || cmd === "newchat") {
   D.conversations[uid] = []; save();
-  return msg.channel.send("✅ AI reset bro 🧹");
+  return msg.channel.send("✅ conversation cleared, finally some peace 🙄");
 }
 
 // ========== CLAIMDAILY ==========
 if (cmd === "claimdaily") {
   if (!canDaily(uid)) {
     const t = new Date(); t.setDate(t.getDate()+1); t.setHours(0,0,0,0);
-    return msg.channel.send(`⏰ Next in **${fmtDur(t.getTime() - Date.now())}**`);
+    return msg.channel.send(`⏰ wait **${fmtDur(t.getTime() - Date.now())}** you greedy mf`);
   }
   addCr(uid, 1); claimDaily(uid);
-  return msg.channel.send(`✅ +1 credit 🪙 Balance: **${credits(uid)}** W`);
+  return msg.channel.send(`✅ +1 credit 🪙 balance: **${credits(uid)}** now stop begging`);
 }
 
 // ========== BALANCE ==========
-if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credits(uid)}** credits 🪙`);
+if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credits(uid)}** credits 🪙 don't spend it all at once`);
 
 // ========== ACCESS ==========
 if (cmd === "access") {
-  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — full access");
-  if (D.users.includes(uid)) return msg.channel.send("✅ **Allowed user** — unlimited xlsqr");
-  if (await hasRole(msg, uid)) return msg.channel.send("🔑 **Allowed role** — unlimited xlsqr");
-  return msg.channel.send(`🪙 **${credits(uid)}** credits.`);
+  if (isOwner(msg.author)) return msg.channel.send("👑 **owner** — full access obviously");
+  if (D.users.includes(uid)) return msg.channel.send("✅ **allowed user** — unlimited xlsqr, lucky you");
+  if (await hasRole(msg, uid)) return msg.channel.send("🔑 **allowed role** — unlimited xlsqr");
+  return msg.channel.send(`🪙 **${credits(uid)}** credits. poor.`);
 }
 
 // ========== XLSQR ==========
 if (cmd === "xlsqr") {
   const q = args.join(" ").trim().toLowerCase();
-  if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
-  if (!fileCache.length) return msg.channel.send("❌ Cache empty.");
-  if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
+  if (!q) return msg.channel.send("❌ `!xlsqr <query>` seriously?");
+  if (!fileCache.length) return msg.channel.send("❌ cache empty. owner needs to `!download` first");
+  if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ no credits broke ass. `!claimdaily`");
   
   const qw = q.split(/\s+/);
   const matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
-  if (!matches.length) return msg.channel.send(`❌ Nothing for "${q}".`);
+  if (!matches.length) return msg.channel.send(`❌ nothing for "${q}" L`);
   if (!hasUnlimited) rmCr(uid, 1);
   
   const f = matches[0], d = await dl(f.url);
-  if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ Download failed."); }
+  if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ download failed, refunded"); }
   
   if (!hasUnlimited) {
-    return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · Bal: **${credits(uid)}**\n${bar}`, files: [{ attachment: d, name: f.name }] });
+    return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · bal: **${credits(uid)}**\n${bar}`, files: [{ attachment: d, name: f.name }] });
   }
   
   const sent = await msg.channel.send({ content: content_(f.name, q, 0, matches.length), files: [{ attachment: d, name: f.name }], components: matches.length > 1 ? [row_(0, matches.length)] : [] });
@@ -662,14 +683,14 @@ if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doAr
 if (!isOwner(msg.author)) return;
 
 // ========== STOPBOT / STARTBOT ==========
-if (cmd === "stopbot") { D.botStopped = true; save(); return msg.channel.send("🔒 **Bot locked.**"); }
-if (cmd === "startbot") { D.botStopped = false; save(); return msg.channel.send("🔓 **Bot unlocked!**"); }
+if (cmd === "stopbot") { D.botStopped = true; save(); return msg.channel.send("🔒 **bot locked.** peasants blocked"); }
+if (cmd === "startbot") { D.botStopped = false; save(); return msg.channel.send("🔓 **bot unlocked.** peasants can use it now"); }
 
 // ========== SERVERS ==========
 if (cmd === "servers") {
   const guilds = bot.guilds.cache;
-  if (guilds.size === 0) return msg.channel.send("❌ Nessun server.");
-  const status = await msg.channel.send(`⏳ Fetching ${guilds.size} servers...`);
+  if (guilds.size === 0) return msg.channel.send("❌ no servers, L");
+  const status = await msg.channel.send(`⏳ fetching ${guilds.size} servers...`);
   const list = [];
   
   for (const guild of guilds.values()) {
@@ -688,7 +709,7 @@ if (cmd === "servers") {
   }
   
   list.sort((a, b) => b.members - a.members);
-  const lines = [`**🌐 ${guilds.size} Servers:**`, ""];
+  const lines = [`**🌐 ${guilds.size} servers:**`, ""];
   for (let i = 0; i < list.length; i++) {
     const s = list[i];
     lines.push(`**${i+1}.** ${s.name} (👥${s.members})`);
@@ -701,20 +722,20 @@ if (cmd === "servers") {
 
 // ========== EGGISGAY ==========
 if (cmd === "eggisgay") {
-  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message!");
-  let ref; try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { return msg.channel.send("❌ Not found."); }
+  if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a message dumbass");
+  let ref; try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { return msg.channel.send("❌ message not found"); }
   
   let targetChannel = msg.channel;
-  if (args[0]) { try { targetChannel = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ Channel not found."); } }
+  if (args[0]) { try { targetChannel = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found idiot"); } }
   
   let rawMsg = null;
   try { const r = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH } }); rawMsg = r.data; } catch {}
   
   const allFiles = extractAllFiles(ref);
   if (rawMsg) { const rf = extractAllFiles(rawMsg); const seen = new Set(allFiles.map(f => f.url)); for (const f of rf) if (!seen.has(f.url)) allFiles.push(f); }
-  if (!allFiles.length) return msg.channel.send("❌ No files.");
+  if (!allFiles.length) return msg.channel.send("❌ no files, waste of time");
   
-  const status = await msg.channel.send(`⏳ Extracting ${allFiles.length} files...`);
+  const status = await msg.channel.send(`⏳ extracting ${allFiles.length} files...`);
   let sent = 0, extracted = [];
   
   for (const file of allFiles) {
@@ -727,60 +748,62 @@ if (cmd === "eggisgay") {
     } else { extracted.push({ name: file.name, data }); }
   }
   
-  if (!extracted.length) return status.edit("❌ No files extracted.");
+  if (!extracted.length) return status.edit("❌ nothing extracted, useless");
   for (let i = 0; i < extracted.length; i++) {
     try { await targetChannel.send({ files: [{ attachment: extracted[i].data, name: extracted[i].name }] }); sent++; } catch {}
     if (i < extracted.length - 1) await sleep(1500);
   }
-  return status.edit(`✅ Sent ${sent}/${extracted.length} files 🔥`);
+  return status.edit(`✅ sent ${sent}/${extracted.length} files, you're welcome 🙄`);
 }
 
 // ========== DEBUG ==========
 if (cmd === "debug") {
   return msg.channel.send([
-    "**🔧 Debug:**",
-    `Bot: ${bot.user?.tag}`,
-    `Servers: ${bot.guilds.cache.size}`,
-    `Cache: ${fileCache.length}`,
+    "**🔧 debug:**",
+    `bot: ${bot.user?.tag}`,
+    `servers: ${bot.guilds.cache.size}`,
+    `cache: ${fileCache.length}`,
     `AI: Groq ⚡`,
-    `Locked: ${D.botStopped ? "🔒" : "🔓"}`
+    `locked: ${D.botStopped ? "🔒" : "🔓"}`,
+    `allowed users: ${D.users.length}`,
+    `allowed roles: ${D.roles.length}`
   ].join("\n"));
 }
 
 // ========== DOWNLOAD ==========
 if (cmd === "download") {
   const ch = args[0] || msg.channelId;
-  const st = await msg.channel.send(`⏳ Downloading from ${ch}...`);
+  const st = await msg.channel.send(`⏳ downloading from ${ch}...`);
   const files = await scanChannel(ch, st);
-  if (!files.length) return st.edit("❌ No .txt files.");
+  if (!files.length) return st.edit("❌ no .txt files, waste of time");
   const added = addToCache(files);
-  return st.edit(`✅ Found: ${files.length} | New: ${added} | Total: ${fileCache.length}`);
+  return st.edit(`✅ found: ${files.length} | new: ${added} | total: ${fileCache.length}`);
 }
 
 // ========== RELOAD ==========
 if (cmd === "reload") {
-  const st = await msg.channel.send(`🔄 Reloading...`);
+  const st = await msg.channel.send(`🔄 reloading...`);
   fileCache = []; cacheUrls = new Set();
   for (const ch of SOURCE_CHANNELS) { addToCache(await scanChannel(ch, st)); }
-  return st.edit(`✅ Loaded ${fileCache.length} files`);
+  return st.edit(`✅ loaded ${fileCache.length} files`);
 }
 
 // ========== GIVECREDIT ==========
 if (cmd === "givecredit" || cmd === "givecredits") {
   const t = args[0], n = parseInt(args[1]) || 1;
-  if (!t) return msg.channel.send("❌ `!givecredit @user [n]`");
+  if (!t) return msg.channel.send("❌ `!givecredit @user [n]` learn to read");
   if (t.toLowerCase() === "all") {
-    if (!msg.guild) return msg.channel.send("❌ Use in server.");
+    if (!msg.guild) return msg.channel.send("❌ use in server idiot");
     await syncGuildMembers(msg.guild);
     const ids = getAllKnownIdsForGuild(msg.guild.id);
     for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n;
     save();
-    return msg.channel.send(`✅ +${n} to ${ids.length} users`);
+    return msg.channel.send(`✅ +${n} to ${ids.length} users, they better be grateful`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
-  if (!m) return msg.channel.send("❌ Invalid user");
+  if (!m) return msg.channel.send("❌ invalid user, are you blind?");
   addCr(m[1], n);
-  return msg.channel.send(`✅ +${n} to <@${m[1]}>`);
+  return msg.channel.send(`✅ +${n} to <@${m[1]}> | bal: ${credits(m[1])}`);
 }
 
 // ========== REMOVECREDIT ==========
@@ -788,54 +811,90 @@ if (cmd === "removecredit") {
   const t = args[0], n = parseInt(args[1]) || 1;
   if (!t) return msg.channel.send("❌ `!removecredit @user [n]`");
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
-  if (!m) return msg.channel.send("❌ Invalid user");
+  if (!m) return msg.channel.send("❌ invalid user");
   rmCr(m[1], n);
-  return msg.channel.send(`✅ -${n} from <@${m[1]}>`);
+  return msg.channel.send(`✅ -${n} from <@${m[1]}> | bal: ${credits(m[1])}`);
 }
 
-// ========== GIVEPERMS ==========
+// ========== GIVEPERMS ========== ⭐ FIXED - SAVES PROPERLY
 if (cmd === "giveperms") {
   const input = args.join(" ").trim();
-  if (!input) return msg.channel.send("❌ `!giveperms @user/@role`");
+  if (!input) return msg.channel.send("❌ `!giveperms @user/@role` are you stupid?");
+  
+  // Check role mention
   const rm = input.match(/^<@&(\d+)>$/);
-  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role added`); }
+  if (rm) { 
+    if (!D.roles.includes(rm[1])) {
+      D.roles.push(rm[1]); 
+      save();
+      console.log(`[PERMS] Added role ${rm[1]}, total roles: ${D.roles.length}`);
+    }
+    return msg.channel.send(`✅ role <@&${rm[1]}> added, saved ✓`); 
+  }
+  
+  // Check role by name
   if (msg.guild) {
     const role = await findRole(msg.guild, input);
-    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** added`); }
+    if (role) { 
+      if (!D.roles.includes(role.id)) {
+        D.roles.push(role.id); 
+        save();
+        console.log(`[PERMS] Added role ${role.id} (${role.name}), total roles: ${D.roles.length}`);
+      }
+      return msg.channel.send(`✅ role **${role.name}** added, saved ✓`); 
+    }
   }
+  
+  // Check user mention or ID
   const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User added`); }
-  return msg.channel.send("❌ Not found");
+  if (um) { 
+    if (!D.users.includes(um[1])) {
+      D.users.push(um[1]); 
+      save();
+      console.log(`[PERMS] Added user ${um[1]}, total users: ${D.users.length}`);
+    }
+    return msg.channel.send(`✅ user <@${um[1]}> added, saved ✓`); 
+  }
+  
+  return msg.channel.send("❌ not found, check your spelling idiot");
 }
 
 // ========== REMOVEPERMS ==========
 if (cmd === "removeperms") {
   const input = args.join(" ").trim();
-  if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ All perms removed."); }
+  if (!input) { 
+    D.users = []; 
+    D.roles = []; 
+    save(); 
+    return msg.channel.send("✅ all perms removed, everyone's poor now"); 
+  }
   const rm = input.match(/^<@&(\d+)>$/);
-  if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send("✅ Removed"); }
+  if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send("✅ role removed"); }
   const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/);
-  if (um) { D.users = D.users.filter(id => id !== um[1]); save(); return msg.channel.send("✅ Removed"); }
-  return msg.channel.send("❌ Not found");
+  if (um) { D.users = D.users.filter(id => id !== um[1]); save(); return msg.channel.send("✅ user removed"); }
+  return msg.channel.send("❌ not found");
 }
 
 // ========== PERMS ==========
 if (cmd === "perms") {
-  const lines = ["**📋 Perms:**", "", "**Roles:**"];
-  if (!D.roles.length) lines.push("None"); else for (const id of D.roles) lines.push(`• <@&${id}>`);
-  lines.push("", "**Users:**");
-  if (!D.users.length) lines.push("None"); else for (const id of D.users) lines.push(`• <@${id}>`);
+  const lines = ["**📋 perms (saved):**", "", "**roles:**"];
+  if (!D.roles.length) lines.push("none (losers)"); 
+  else for (const id of D.roles) lines.push(`• <@&${id}> (\`${id}\`)`);
+  lines.push("", "**users:**");
+  if (!D.users.length) lines.push("none"); 
+  else for (const id of D.users) lines.push(`• <@${id}> (\`${id}\`)`);
+  lines.push("", `**total credits given:** ${Object.values(D.credits).reduce((a,b) => a+b, 0)}`);
   return msg.channel.send(lines.join("\n"));
 }
 
 // ========== LEAKALL ==========
 if (cmd === "leakall") {
-  if (!fileCache.length) return msg.channel.send("❌ Cache empty.");
+  if (!fileCache.length) return msg.channel.send("❌ cache empty dumbass");
   let targetChannel = msg.channel;
-  if (args[0]) { try { targetChannel = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ Channel not found."); } }
+  if (args[0]) { try { targetChannel = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); } }
   
   const total = fileCache.length;
-  const status = await msg.channel.send(`🔥 Leaking ${total} files...`);
+  const status = await msg.channel.send(`🔥 leaking ${total} files...`);
   let sent = 0, failed = 0;
   
   for (let i = 0; i < fileCache.length; i++) {
@@ -848,15 +907,15 @@ if (cmd === "leakall") {
     if (i % 20 === 0) await status.edit(`🔥 ${Math.round((i+1)/total*100)}% | ✅${sent} ❌${failed}`).catch(() => {});
     await sleep(2000);
   }
-  return status.edit(`✅ Done! Sent: ${sent}/${total}`);
+  return status.edit(`✅ done. sent: ${sent}/${total}`);
 }
 
 // ========== EXTRACT ==========
 if (cmd === "extract") {
-  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message.");
+  if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a search result idiot");
   const search = searches.get(msg.reference.messageId);
   if (search) {
-    await msg.channel.send(`📦 Extracting ${search.m.length} files...`);
+    await msg.channel.send(`📦 extracting ${search.m.length} files...`);
     let sent = 0;
     for (let i = 0; i < search.m.length; i += 10) {
       const batch = search.m.slice(i, i + 10), files = [];
@@ -864,34 +923,34 @@ if (cmd === "extract") {
       if (files.length) await msg.channel.send({ files });
       await sleep(1500);
     }
-    return msg.channel.send(`✅ Sent ${sent} files`);
+    return msg.channel.send(`✅ sent ${sent} files`);
   }
-  return msg.channel.send("❌ Reply to a search result.");
+  return msg.channel.send("❌ that's not a search result");
 }
 
-  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ ${err?.message || "Error"}`); } catch {} }
+  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ error: ${err?.message || "something broke"}`); } catch {} }
 });
 
 // ================= ARCHIVE =================
 let archBusy = false;
 async function doArchive(msg, chId) {
-  if (archBusy) return msg.channel.send("⏳ Busy.");
+  if (archBusy) return msg.channel.send("⏳ busy, wait");
   if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
   archBusy = true;
   try {
-    await msg.channel.send("⏳ Archiving...");
+    await msg.channel.send("⏳ archiving...");
     const all = await scanChannel(chId);
-    if (!all.length) return msg.channel.send("❌ No .txt files.");
+    if (!all.length) return msg.channel.send("❌ no .txt files");
     const zip = new AdmZip(); let ok = 0;
     for (let i = 0; i < all.length; i += 10) {
       const batch = all.slice(i, i + 10);
       const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) })));
       for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; }
     }
-    if (!ok) return msg.channel.send("❌ All downloads failed.");
+    if (!ok) return msg.channel.send("❌ all downloads failed, L");
     const buf = zip.toBuffer();
     await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
-    return msg.channel.send("✅ Done");
+    return msg.channel.send("✅ done");
   } catch (err) { console.error("[ARCHIVE]", err); try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
   finally { archBusy = false; }
 }
@@ -900,14 +959,19 @@ async function doArchive(msg, chId) {
 process.on("unhandledRejection", e => console.error("[ERR]", e));
 process.on("uncaughtException", e => console.error("[ERR]", e));
 
+// Save on exit
+process.on("SIGINT", () => { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); process.exit(); });
+process.on("SIGTERM", () => { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); process.exit(); });
+
 bot.on("guildMemberAdd", member => rememberGuildMember(member.guild.id, member.user));
 bot.on("guildMemberRemove", member => forgetGuildMember(member.guild.id, member.id));
 
 if (BOT_TOKEN) {
   bot.once("ready", async () => {
-    console.log(`[BOT] ${bot.user?.tag} online! 🔥`);
-    console.log(`[BOT] Servers: ${bot.guilds.cache.size}`);
+    console.log(`[BOT] ${bot.user?.tag} online 😤`);
+    console.log(`[BOT] servers: ${bot.guilds.cache.size}`);
     console.log(`[BOT] AI: Groq ⚡`);
+    console.log(`[BOT] saved users: ${D.users.length}, roles: ${D.roles.length}`);
     for (const guild of bot.guilds.cache.values()) syncGuildMembers(guild).catch(() => {});
   });
   bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
