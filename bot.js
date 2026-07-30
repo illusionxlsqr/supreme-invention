@@ -51,11 +51,9 @@ const claimDaily = id => { D.daily[id] = Date.now(); save(); };
 const reg = u => { if (!u?.id || u.bot) return; D.known[u.id] = u.username || u.id; save(); };
 const fmtDur = ms => { const s = Math.floor(ms/1000); if(s<60) return `${s}s`; const m = Math.floor(s/60); if(m<60) return `${m}m`; const h = Math.floor(m/60); return h<24 ? `${h}h ${m%60}m` : `${Math.floor(h/24)}d ${h%24}h`; };
 
-// Check se un user ID ha permessi unlimited (per i bottoni)
 function hasUnlimitedById(userId, member = null) {
   if (OWNER_IDS.includes(userId)) return true;
   if (D.users.includes(userId)) return true;
-  // Check ruoli se abbiamo il member
   if (member && D.roles.length > 0) {
     return D.roles.some(r => member.roles?.cache?.has(r));
   }
@@ -126,8 +124,6 @@ async function syncGuildMembers(guild) {
     let after = "0";
     let totalFetched = 0;
     
-    console.log(`[MEMBERS] Starting sync for guild ${guild.id} (${guild.name})...`);
-    
     while (true) {
       const url = `https://discord.com/api/v10/guilds/${guild.id}/members?limit=1000&after=${after}`;
       const res = await axios.get(url, { headers: { Authorization: AUTH }, validateStatus: () => true });
@@ -138,7 +134,7 @@ async function syncGuildMembers(guild) {
         continue;
       }
       
-      if (res.status === 403) throw new Error(`403 Forbidden - Missing Server Members Intent`);
+      if (res.status === 403) throw new Error(`403 Forbidden`);
       if (res.status !== 200 || !Array.isArray(res.data)) throw new Error(`status ${res.status}`);
       if (!res.data.length) break;
       
@@ -191,7 +187,6 @@ async function hasRole(msg, uid) {
   } catch { return false; }
 }
 
-// hasUnlimitedXlsqr = può usare xlsqr illimitato + navigazione (owner, allowed users, allowed roles)
 async function hasUnlimitedXlsqr(msg) {
   if (isOwner(msg.author)) return true;
   if (D.users.includes(msg.author.id)) return true;
@@ -316,13 +311,11 @@ async function scanChannel(chId, statusMsg = null) {
   const all = [], urls = new Set();
   let last = null;
   let batches = 0;
-  let totalMsgs = 0;
   
   while (true) {
     const msgs = await fetchMsgs(chId, last);
     if (!msgs || !msgs.length) break;
     batches++;
-    totalMsgs += msgs.length;
     
     for (const m of msgs) {
       const files = extractTxt(m);
@@ -376,8 +369,11 @@ async function getRelevantFilesContent(query, maxFiles = 5) {
   return contents;
 }
 
+// ⭐ AI FUNCTION - FIXED
 async function askAI(userId, question, relevantFiles = []) {
-  if (!GEMINI_API_KEY) return "❌ AI not configured (missing GEMINI_API_KEY)";
+  if (!GEMINI_API_KEY) {
+    return "yo bro, l'AI non è configurata 💀 manca GEMINI_API_KEY";
+  }
   
   let fileContext = "";
   if (relevantFiles.length > 0) {
@@ -388,49 +384,91 @@ async function askAI(userId, question, relevantFiles = []) {
   if (!D.conversations[userId]) D.conversations[userId] = [];
   const history = D.conversations[userId].slice(-10);
   
-  const systemPrompt = `You are an AI assistant for a Discord bot called XLSQR. Reply in a friendly and casual way.
-You can: Answer questions, Create scripts, Analyze files, Give technical advice.
-Reply in the same language the user writes in. Use emoji occasionally.
-${fileContext ? "You have access to these files:" + fileContext : ""}`;
+  // ⭐ SYSTEM PROMPT con slang
+  const systemPrompt = `Sei XLSQR Bot, un bot Discord figo e street. Rispondi in modo casual e amichevole usando slang tipo:
+- "bro", "fra", "gang"
+- "ngl" (not gonna lie), "fr" (for real), "no cap"
+- "💀", "🔥", "W", "L"
+- "ayo", "bet", "lowkey", "highkey"
+- "on god", "facts", "real shit"
 
-  const messages = [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: question }];
+Puoi:
+- Rispondere a domande
+- Creare script (Python, JavaScript, Lua, etc)
+- Dare consigli tecnici
+- Essere divertente
+
+Rispondi nella stessa lingua dell'utente (italiano o inglese).
+Usa emoji ogni tanto per rendere le risposte più fighe.
+Se ti chiedono di creare codice, scrivi codice funzionante e commentato.
+
+${fileContext ? "Hai accesso a questi file:" + fileContext : ""}`;
+
+  const messages = [
+    { role: "user", content: systemPrompt },
+    { role: "assistant", content: "yo sono XLSQR Bot, dimmi tutto bro 🔥" },
+    ...history,
+    { role: "user", content: question }
+  ];
   
   try {
-    const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"];
-    let res = null, lastErr = null;
+    // Prova diversi modelli Gemini
+    const GEMINI_MODELS = ["gemini-1.5-flash", "gemini-1.0-pro", "gemini-pro"];
+    let res = null;
+    let lastErr = null;
     
     for (const model of GEMINI_MODELS) {
       try {
-        res = await axios.post(
-          "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-          { model, messages, max_tokens: 2000, temperature: 0.8 },
-          { headers: { "Authorization": `Bearer ${GEMINI_API_KEY}`, "Content-Type": "application/json" }, timeout: 120000, validateStatus: () => true }
-        );
-        if (res.status === 200 && res.data?.choices) break;
-        if (res.status === 429) {
-          await sleep(15000);
-          res = await axios.post("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            { model, messages, max_tokens: 2000, temperature: 0.8 },
-            { headers: { "Authorization": `Bearer ${GEMINI_API_KEY}`, "Content-Type": "application/json" }, timeout: 120000, validateStatus: () => true });
-          if (res.status === 200 && res.data?.choices) break;
+        // Metodo 1: API diretta Gemini
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        
+        res = await axios.post(url, {
+          contents: messages.map(m => ({
+            role: m.role === "assistant" ? "model" : "user",
+            parts: [{ text: m.content }]
+          })),
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 2048,
+          }
+        }, {
+          headers: { "Content-Type": "application/json" },
+          timeout: 60000,
+          validateStatus: () => true
+        });
+        
+        if (res.status === 200 && res.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+          let reply = res.data.candidates[0].content.parts[0].text.trim();
+          
+          // Salva nella history
+          D.conversations[userId].push({ role: "user", content: question });
+          D.conversations[userId].push({ role: "assistant", content: reply });
+          if (D.conversations[userId].length > 20) D.conversations[userId] = D.conversations[userId].slice(-20);
+          save();
+          
+          return reply;
         }
+        
+        if (res.status === 429) {
+          console.log(`[AI] Rate limited on ${model}, waiting...`);
+          await sleep(5000);
+          continue;
+        }
+        
         lastErr = res.data?.error?.message || `Status ${res.status}`;
-        res = null;
-      } catch (e) { lastErr = e.message; res = null; }
+        console.log(`[AI] ${model} failed:`, lastErr);
+        
+      } catch (e) {
+        lastErr = e.message;
+        console.log(`[AI] ${model} error:`, e.message);
+      }
     }
     
-    if (!res || res.status !== 200 || !res.data?.choices) return `❌ AI Error: ${lastErr || "No model available"}`;
+    return `ayo bro, l'AI ha fatto flop 💀 Error: ${lastErr || "unknown"}`;
     
-    let reply = res.data.choices[0]?.message?.content?.trim() || "🤔 No response, try again.";
-    
-    D.conversations[userId].push({ role: "user", content: question });
-    D.conversations[userId].push({ role: "assistant", content: reply });
-    if (D.conversations[userId].length > 20) D.conversations[userId] = D.conversations[userId].slice(-20);
-    save();
-    
-    return reply;
   } catch (err) {
-    return `❌ AI Error: ${err.message}`;
+    console.error("[AI] Fatal error:", err.message);
+    return `bruh moment, qualcosa è andato storto 💀 ${err.message}`;
   }
 }
 
@@ -459,31 +497,26 @@ const row_ = (i, t) => new ActionRowBuilder().addComponents(
   new ButtonBuilder().setCustomId("n").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1)
 );
 
-// ========== BUTTONS - FIX: verifica permessi al momento del click ==========
+// BUTTONS
 bot.on("interactionCreate", async i => {
   if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
   
   const s = searches.get(i.message.id);
-  if (!s) return i.reply({ content: "❌ Expired.", ephemeral: true });
+  if (!s) return i.reply({ content: "❌ Expired bro.", ephemeral: true });
   
-  // Deve essere lo stesso utente che ha fatto la ricerca
-  if (i.user.id !== s.uid) return i.reply({ content: "❌ Not yours.", ephemeral: true });
+  if (i.user.id !== s.uid) return i.reply({ content: "❌ Not yours gang.", ephemeral: true });
   
-  // ⭐ FIX: Verifica permessi al momento del click
   const userId = i.user.id;
   
-  // Owner può sempre navigare
   if (!isOwnerById(userId)) {
-    // Check se è un allowed user
     if (!D.users.includes(userId)) {
-      // Check se ha un allowed role
       let hasAllowedRole = false;
       if (i.member && D.roles.length > 0) {
         hasAllowedRole = D.roles.some(r => i.member.roles?.cache?.has(r));
       }
       
       if (!hasAllowedRole) {
-        return i.reply({ content: "❌ You need the allowed role to navigate. Use `!giveperms` (owner only).", ephemeral: true });
+        return i.reply({ content: "❌ You need the allowed role to navigate bro 💀", ephemeral: true });
       }
     }
   }
@@ -491,7 +524,7 @@ bot.on("interactionCreate", async i => {
   await i.deferUpdate();
   s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
   const f = s.m[s.idx], d = await dl(f.url);
-  if (!d) return i.followUp({ content: "❌ Download failed.", ephemeral: true });
+  if (!d) return i.followUp({ content: "❌ Download failed fra.", ephemeral: true });
   await i.editReply({ content: content_(f.name, s.q, s.idx, s.m.length), files: [{ attachment: d, name: f.name }], components: [row_(s.idx, s.m.length)] });
 });
 
@@ -506,11 +539,54 @@ bot.on("messageCreate", async msg => {
   if (msg.author.bot || msg.author.id === bot.user?.id) return;
   
   const c = msg.content?.trim() || "";
+  const uid = msg.author.id;
   
-  // Fun responses solo se non è un comando
+  // ⭐ CHECK SE MENZIONA IL BOT O RISPONDE AL BOT
+  const mentionsBot = msg.mentions.has(bot.user.id);
+  const repliesToBot = msg.reference?.messageId ? await (async () => {
+    try {
+      const ref = await msg.channel.messages.fetch(msg.reference.messageId);
+      return ref.author.id === bot.user.id;
+    } catch { return false; }
+  })() : false;
+  
+  // Se menziona il bot o risponde al bot, usa l'AI
+  if (mentionsBot || repliesToBot) {
+    // Rimuovi la menzione dal messaggio
+    let question = c.replace(/<@!?\d+>/g, "").trim();
+    
+    if (!question) {
+      return msg.reply("yo wassup bro? dimmi qualcosa 🔥");
+    }
+    
+    // Mostra che sta scrivendo
+    msg.channel.sendTyping().catch(() => {});
+    
+    // Chiedi all'AI
+    const relevantFiles = await getRelevantFilesContent(question, 2);
+    const response = await askAI(uid, question, relevantFiles);
+    
+    // Rispondi
+    if (response.length <= 2000) {
+      return msg.reply(response);
+    } else {
+      // Se troppo lungo, manda come file
+      const chunks = response.match(/[\s\S]{1,1990}/g) || [response];
+      await msg.reply(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await msg.channel.send(chunks[i]);
+        await sleep(500);
+      }
+    }
+    return;
+  }
+  
+  // Fun responses (solo se non è un comando)
   if (!c.startsWith("!")) {
     const funResponse = checkFunResponse(c);
-    if (funResponse && Math.random() < 0.5) { try { await msg.channel.send(funResponse); } catch {} }
+    if (funResponse && Math.random() < 0.5) { 
+      try { await msg.channel.send(funResponse); } catch {} 
+    }
     return;
   }
   
@@ -520,16 +596,13 @@ bot.on("messageCreate", async msg => {
 
   const args = c.slice(1).trim().split(/\s+/);
   const cmd = args.shift()?.toLowerCase();
-  const uid = msg.author.id;
 
-  // Check se ha xlsqr illimitato (owner, allowed user, allowed role)
   const hasUnlimited = await hasUnlimitedXlsqr(msg);
   
-  // ⭐ FIX STOPBOT: Se bot è locked, BLOCCA TUTTI i comandi per chi non ha permessi
+  // Se bot è locked, blocca tutti i comandi per chi non ha permessi
   if (D.botStopped) {
     if (!hasUnlimited) {
-      // Blocca TUTTI i comandi, non solo alcuni
-      return msg.channel.send("🔒 **Bot locked.** You need the allowed role to use commands.");
+      return msg.channel.send("🔒 **Bot locked bro.** You need the allowed role to use commands.");
     }
   }
 
@@ -545,6 +618,9 @@ if (cmd === "help") {
     "`!claimdaily` — 1 free credit",
     "`!balance` — Credits",
     "`!access` — Access level",
+    "",
+    "**💬 Chat:**",
+    "Menziona il bot (@bot) o rispondi a un suo messaggio per parlare con l'AI!",
   ];
   
   if (isOwner(msg.author)) {
@@ -564,9 +640,9 @@ if (cmd === "help") {
 }
 
 // ========== ASK AI ==========
-if (cmd === "aiask") {
+if (cmd === "aiask" || cmd === "ai" || cmd === "ask") {
   const question = args.join(" ").trim();
-  if (!question) return msg.channel.send("❌ `!aiask <domanda>`");
+  if (!question) return msg.channel.send("❌ `!aiask <domanda>` bro");
   msg.channel.sendTyping().catch(() => {});
   const relevantFiles = await getRelevantFilesContent(question, 3);
   const response = await askAI(uid, question, relevantFiles);
@@ -579,31 +655,39 @@ if (cmd === "aiask") {
 // ========== SCRIPT ==========
 if (cmd === "script" || cmd === "genera" || cmd === "code") {
   const desc = args.join(" ").trim();
-  if (!desc) return msg.channel.send("❌ `!script <description>`");
+  if (!desc) return msg.channel.send("❌ `!script <description>` bro");
   msg.channel.sendTyping().catch(() => {});
-  const prompt = `Create a complete working script for: ${desc}\nRequirements: Clean code, Error handling, Instructions, Example.`;
+  const prompt = `Crea uno script completo e funzionante per: ${desc}
+
+Requirements:
+- Codice pulito e commentato
+- Error handling
+- Istruzioni per l'installazione
+- Esempio di utilizzo
+
+Se la richiesta è vaga, fai assunzioni ragionevoli e spiega cosa fa lo script.`;
   const relevantFiles = await getRelevantFilesContent(desc, 2);
   const response = await askAI(uid, prompt, relevantFiles);
   if (response.length > 1900) {
-    return msg.channel.send({ content: "📝 Generated script:", files: [{ attachment: Buffer.from(response, "utf8"), name: "script.md" }] });
+    return msg.channel.send({ content: "📝 Script generato bro:", files: [{ attachment: Buffer.from(response, "utf8"), name: "script.md" }] });
   }
   return msg.channel.send(response);
 }
 
 // ========== CLEARCONV ==========
-if (cmd === "clearconv" || cmd === "resetai") {
+if (cmd === "clearconv" || cmd === "resetai" || cmd === "newchat") {
   D.conversations[uid] = []; save();
-  return msg.channel.send("✅ AI conversation reset 🧹");
+  return msg.channel.send("✅ AI conversation reset bro 🧹");
 }
 
 // ========== CLAIMDAILY ==========
 if (cmd === "claimdaily") {
   if (!canDaily(uid)) {
     const t = new Date(); t.setDate(t.getDate()+1); t.setHours(0,0,0,0);
-    return msg.channel.send(`⏰ Next in **${fmtDur(t.getTime() - Date.now())}**`);
+    return msg.channel.send(`⏰ Next in **${fmtDur(t.getTime() - Date.now())}** bro`);
   }
   addCr(uid, 1); claimDaily(uid);
-  return msg.channel.send(`✅ +1 credit 🪙 Balance: **${credits(uid)}**`);
+  return msg.channel.send(`✅ +1 credit 🪙 Balance: **${credits(uid)}** W`);
 }
 
 // ========== BALANCE ==========
@@ -611,30 +695,29 @@ if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credit
 
 // ========== ACCESS ==========
 if (cmd === "access") {
-  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — full access to all commands");
+  if (isOwner(msg.author)) return msg.channel.send("👑 **Owner** — full access gang");
   if (D.users.includes(uid)) return msg.channel.send("✅ **Allowed user** — unlimited !xlsqr + navigation");
   if (await hasRole(msg, uid)) return msg.channel.send("🔑 **Allowed role** — unlimited !xlsqr + navigation");
-  return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 search, NO prev/next navigation.`);
+  return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 search, NO prev/next bro.`);
 }
 
 // ========== XLSQR ==========
 if (cmd === "xlsqr") {
   const q = args.join(" ").trim().toLowerCase();
-  if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
+  if (!q) return msg.channel.send("❌ `!xlsqr <query>` bro");
   if (!fileCache.length) return msg.channel.send("❌ Cache empty. Owner: `!download` first.");
   
-  if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ No credits. `!claimdaily`");
+  if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ No credits bro. `!claimdaily`");
   
   const qw = q.split(/\s+/);
   const matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
-  if (!matches.length) return msg.channel.send(`❌ Nothing for **"${q}"**.`);
+  if (!matches.length) return msg.channel.send(`❌ Nothing for **"${q}"** bro.`);
   
   if (!hasUnlimited) rmCr(uid, 1);
   
   const f = matches[0], d = await dl(f.url);
-  if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded."); }
+  if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ Download failed. Refunded bro."); }
   
-  // ⭐ FIX: Utenti senza unlimited NON vedono i bottoni
   if (!hasUnlimited) {
     return msg.channel.send({ 
       content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 1 used · Balance: **${credits(uid)}**\n🔒 Get allowed role for prev/next\n${bar}`, 
@@ -642,21 +725,19 @@ if (cmd === "xlsqr") {
     });
   }
   
-  // Utenti con unlimited: vedono i bottoni
   const sent = await msg.channel.send({ 
     content: content_(f.name, q, 0, matches.length), 
     files: [{ attachment: d, name: f.name }], 
     components: matches.length > 1 ? [row_(0, matches.length)] : [] 
   });
   
-  // Salva la ricerca per la navigazione
   if (matches.length > 1) {
     searches.set(sent.id, { m: matches, idx: 0, q, uid });
   }
   return;
 }
 
-// ========== ARCHIVE (allowed IDs) ==========
+// ========== ARCHIVE ==========
 if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
 
 // =====================================
@@ -667,12 +748,12 @@ if (!isOwner(msg.author)) return;
 // ========== STOPBOT / STARTBOT ==========
 if (cmd === "stopbot") {
   D.botStopped = true; save();
-  return msg.channel.send("🔒 **Bot locked.** Only allowed users/roles can use commands now.\n`!startbot` to unlock.");
+  return msg.channel.send("🔒 **Bot locked gang.** Only allowed users/roles can use commands now.\n`!startbot` to unlock.");
 }
 
 if (cmd === "startbot") {
   D.botStopped = false; save();
-  return msg.channel.send("🔓 **Bot unlocked!** Everyone can use commands now.");
+  return msg.channel.send("🔓 **Bot unlocked!** Everyone can use commands now W.");
 }
 
 // ========== SERVERS ==========
@@ -680,7 +761,7 @@ if (cmd === "servers") {
   const guilds = bot.guilds.cache;
   
   if (guilds.size === 0) {
-    return msg.channel.send("❌ Il bot non è in nessun server.");
+    return msg.channel.send("❌ Il bot non è in nessun server bro.");
   }
   
   const status = await msg.channel.send(`⏳ Recuperando info da **${guilds.size}** server...`);
@@ -756,7 +837,7 @@ if (cmd === "servers") {
 // ========== EGGISGAY ==========
 if (cmd === "eggisgay") {
   const targetChannelId = args[0];
-  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message with a file!");
+  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a message with a file bro!");
   
   let ref;
   try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { ref = null; }
@@ -781,7 +862,7 @@ if (cmd === "eggisgay") {
     for (const f of rawFiles) if (!seenUrls.has(f.url)) { allFiles.push(f); seenUrls.add(f.url); }
   }
   
-  if (!allFiles.length) return msg.channel.send(`❌ No files found.`);
+  if (!allFiles.length) return msg.channel.send(`❌ No files found bro.`);
   
   const status = await msg.channel.send(`⏳ Extracting **${allFiles.length}** files...`);
   let sent = 0, extracted = [];
@@ -830,6 +911,7 @@ if (cmd === "debug") {
     `Members: **${cachedMembers}** cached`,
     `File Cache: **${fileCache.length}**`,
     `Bot Stopped: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`,
+    `AI: **${GEMINI_API_KEY ? "✅ Configured" : "❌ No API Key"}**`,
     `Allowed Users: **${D.users.length}**`,
     `Allowed Roles: **${D.roles.length}**`
   ].join("\n"));
@@ -858,7 +940,7 @@ if (cmd === "sources") {
 
 // ========== SYNCMEMBERS ==========
 if (cmd === "syncmembers") {
-  if (!msg.guild) return msg.channel.send("❌ Use this command in a server.");
+  if (!msg.guild) return msg.channel.send("❌ Use this in a server bro.");
   const st = await msg.channel.send("⏳ Syncing...");
   const count = await syncGuildMembers(msg.guild);
   return st.edit(`✅ Synced **${count}** members`);
@@ -875,7 +957,7 @@ if (cmd === "givecredit" || cmd === "givecredits") {
     const ids = getAllKnownIdsForGuild(msg.guild.id);
     for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n;
     save();
-    return status.edit(`✅ +**${n}** to **${ids.length}** users`);
+    return status.edit(`✅ +**${n}** to **${ids.length}** users W`);
   }
   const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/);
   if (!m) return msg.channel.send("❌ Invalid user");
@@ -902,166 +984,4 @@ if (cmd === "removecredit" || cmd === "removecredits") {
 }
 
 // ========== GIVEPERMS ==========
-if (cmd === "giveperms") {
-  const input = args.join(" ").trim();
-  if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`\n\n⚠️ This gives unlimited !xlsqr + navigation only, NOT owner commands.");
-  const rm = input.match(/^<@&(\d+)>$/);
-  if (rm) { if (!D.roles.includes(rm[1])) D.roles.push(rm[1]); save(); return msg.channel.send(`✅ Role <@&${rm[1]}> → unlimited xlsqr + navigation.`); }
-  if (msg.guild) {
-    const role = await findRole(msg.guild, input);
-    if (role) { if (!D.roles.includes(role.id)) D.roles.push(role.id); save(); return msg.channel.send(`✅ Role **${role.name}** → unlimited xlsqr + navigation.`); }
-  }
-  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-  if (um) { if (!D.users.includes(um[1])) D.users.push(um[1]); save(); return msg.channel.send(`✅ User <@${um[1]}> → unlimited xlsqr + navigation.`); }
-  return msg.channel.send(`❌ Not found: \`${input}\``);
-}
-
-// ========== REMOVEPERMS ==========
-if (cmd === "removeperms") {
-  const input = args.join(" ").trim();
-  if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ All perms removed."); }
-  const rm = input.match(/^<@&(\d+)>$/);
-  if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send(`✅ Removed role.`); }
-  if (msg.guild) {
-    const role = await findRole(msg.guild, input);
-    if (role) { D.roles = D.roles.filter(id => id !== role.id); save(); return msg.channel.send(`✅ Removed role **${role.name}**.`); }
-  }
-  const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/);
-  if (um) { D.users = D.users.filter(id => id !== um[1]); D.roles = D.roles.filter(id => id !== um[1]); save(); return msg.channel.send(`✅ Removed.`); }
-  return msg.channel.send("❌ Not found");
-}
-
-// ========== PERMS ==========
-if (cmd === "perms") {
-  const lines = ["**📋 Permissions:**", "", "**Allowed Roles (unlimited xlsqr + nav):**"];
-  if (!D.roles.length) lines.push("None"); else for (const id of D.roles) lines.push(`• <@&${id}>`);
-  lines.push("", "**Allowed Users (unlimited xlsqr + nav):**");
-  if (!D.users.length) lines.push("None"); else for (const id of D.users) lines.push(`• <@${id}>`);
-  lines.push("", `**Bot Status:** ${D.botStopped ? "🔒 Locked" : "🔓 Unlocked"}`);
-  lines.push("", "⚠️ Only owners can use admin commands.");
-  return msg.channel.send(lines.join("\n"));
-}
-
-// ========== RELOAD ==========
-if (cmd === "reload") {
-  const st = await msg.channel.send(`🔄 Reloading from ${SOURCE_CHANNELS.length} channels...`);
-  fileCache = []; cacheUrls = new Set();
-  for (const ch of SOURCE_CHANNELS) {
-    const files = await scanChannel(ch, st);
-    addToCache(files);
-  }
-  return st.edit(`✅ Loaded **${fileCache.length}** files.`);
-}
-
-// ========== LEAKALL ==========
-if (cmd === "leakall") {
-  if (!fileCache.length) return msg.channel.send("❌ Cache empty.");
-  const targetChannelId = args[0];
-  let targetChannel = msg.channel;
-  if (targetChannelId) {
-    try { targetChannel = await bot.channels.fetch(targetChannelId); } catch { return msg.channel.send(`❌ Channel not found.`); }
-  }
-  const total = fileCache.length;
-  const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES**...`);
-  let sent = 0, failed = 0;
-  
-  for (let i = 0; i < fileCache.length; i++) {
-    const f = fileCache[i];
-    let data = null;
-    for (let attempt = 0; attempt < 3; attempt++) { data = await dl(f.url); if (data) break; await sleep(1000 * (attempt + 1)); }
-    
-    if (data) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try { await targetChannel.send({ content: `📄 \`${f.name}\` (${i+1}/${total})`, files: [{ attachment: data, name: f.name }] }); sent++; break; }
-        catch { if (attempt < 2) await sleep(3000 * (attempt + 1)); else failed++; }
-      }
-    } else { failed++; }
-    
-    if (i % 20 === 0) await status.edit(`🔥 Progress: **${Math.round((i+1)/total*100)}%** | ✅ ${sent} | ❌ ${failed}`).catch(() => {});
-    await sleep(2000);
-  }
-  
-  return status.edit(`✅ **COMPLETE** | Sent: **${sent}/${total}** | Failed: **${failed}**`);
-}
-
-// ========== EXTRACT ==========
-if (cmd === "extract") {
-  if (!msg.reference?.messageId) return msg.channel.send("❌ Reply to a `!xlsqr` result OR .zip file.");
-  const search = searches.get(msg.reference.messageId);
-  if (search) {
-    await msg.channel.send(`📦 Extracting **${search.m.length}** files...`);
-    let sent = 0;
-    for (let i = 0; i < search.m.length; i += 10) {
-      const batch = search.m.slice(i, i + 10), files = [];
-      for (const f of batch) { const d = await dl(f.url); if (d) { files.push({ attachment: d, name: f.name }); sent++; } }
-      if (files.length) await msg.channel.send({ files });
-      if (i + 10 < search.m.length) await sleep(1500);
-    }
-    return msg.channel.send(`✅ Sent **${sent}** files.`);
-  }
-  const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
-  if (!ref) return msg.channel.send("❌ Message not found.");
-  let zipUrl = null;
-  for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; }
-  if (!zipUrl) return msg.channel.send("❌ Reply to a search result or .zip file.");
-  const zd = await dl(zipUrl);
-  if (!zd) return msg.channel.send("❌ Download failed.");
-  const zip = new AdmZip(zd);
-  const extracted = [];
-  for (const e of zip.getEntries()) if (!e.isDirectory) extracted.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
-  if (!extracted.length) return msg.channel.send("❌ No files in zip.");
-  for (let i = 0; i < extracted.length; i += 10) {
-    await msg.channel.send({ files: extracted.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) });
-    if (i + 10 < extracted.length) await sleep(1000);
-  }
-  return msg.channel.send(`✅ Done.`);
-}
-
-  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ ${err?.message || "Error"}`); } catch {} }
-});
-
-// ================= ARCHIVE =================
-let archBusy = false;
-async function doArchive(msg, chId) {
-  if (archBusy) return msg.channel.send("⏳ Busy.");
-  if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
-  archBusy = true;
-  try {
-    await msg.channel.send("⏳ Archiving...");
-    const all = await scanChannel(chId);
-    if (!all.length) return msg.channel.send("❌ No .txt files.");
-    const zip = new AdmZip(); let ok = 0;
-    for (let i = 0; i < all.length; i += 10) {
-      const batch = all.slice(i, i + 10);
-      const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) })));
-      for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; }
-    }
-    if (!ok) return msg.channel.send("❌ All downloads failed.");
-    const buf = zip.toBuffer();
-    const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok });
-    if (up?.url) return msg.channel.send(`✅ ${up.url}`);
-    let sent = false;
-    try { const t = await bot.users.fetch(TARGET_USER_ID); await t.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } catch {}
-    if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } } catch {}
-    if (!sent) await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
-    return msg.channel.send("✅ Done.");
-  } catch (err) { console.error("[ARCHIVE]", err); try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
-  finally { archBusy = false; }
-}
-
-// ================= START =================
-process.on("unhandledRejection", e => console.error("[ERR]", e));
-process.on("uncaughtException", e => console.error("[ERR]", e));
-
-bot.on("guildMemberAdd", member => rememberGuildMember(member.guild.id, member.user));
-bot.on("guildMemberRemove", member => forgetGuildMember(member.guild.id, member.id));
-
-if (BOT_TOKEN) {
-  bot.once("ready", async () => {
-    console.log(`[BOT] ${bot.user?.tag} online!`);
-    console.log(`[BOT] Servers: ${bot.guilds.cache.size}`);
-    console.log(`[BOT] Owners: ${OWNER_IDS.join(", ")} + ${OWNER_USERNAME}`);
-    for (const guild of bot.guilds.cache.values()) syncGuildMembers(guild).catch(() => {});
-  });
-  bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
-}
+if (cmd === "g
