@@ -31,10 +31,11 @@ if (!BOT_TOKEN) { console.error("[FATAL] BOT_TOKEN missing"); }
 
 // ================= DATA =================
 const DF = path.join(__dirname, "data.json");
-let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {} };
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false };
 try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8")) }; } catch {}
 if (!D.guildMembers) D.guildMembers = {};
 if (!D.conversations) D.conversations = {};
+if (D.botStopped === undefined) D.botStopped = false;
 let st = null;
 function save() { if (st) return; st = setTimeout(() => { st = null; try { fs.writeFileSync(DF, JSON.stringify(D)); } catch {} }, 500); }
 
@@ -651,6 +652,43 @@ bot.on("messageCreate", async msg => {
   const cmd = args.shift()?.toLowerCase();
   const uid = msg.author.id;
 
+  // Check if user can control bot (owner OR has allowed role)
+  const canControlBot = async () => {
+    if (isOwner(msg.author)) return true;
+    if (D.users.includes(uid)) return true;
+    if (msg.guild && D.roles.length > 0) {
+      try {
+        const member = msg.member || await msg.guild.members.fetch(uid);
+        if (D.roles.some(r => member.roles.cache.has(r))) return true;
+      } catch {}
+    }
+    return false;
+  };
+
+  // ========== STOPBOT / STARTBOT (always check these first) ==========
+  if (cmd === "stopbot") {
+    if (!await canControlBot()) return msg.channel.send("❌ Non hai i permessi per stoppare il bot.");
+    D.botStopped = true;
+    save();
+    return msg.channel.send("🛑 **Bot stoppato.** Solo chi ha i permessi può usare `!startbot` per riattivarlo.");
+  }
+  
+  if (cmd === "startbot") {
+    if (!await canControlBot()) return msg.channel.send("❌ Non hai i permessi per avviare il bot.");
+    D.botStopped = false;
+    save();
+    return msg.channel.send("✅ **Bot riattivato!** Tutti i comandi sono di nuovo disponibili.");
+  }
+  
+  // If bot is stopped, ignore all other commands
+  if (D.botStopped) {
+    // Only respond once per user to avoid spam
+    if (cmd === "help" || cmd === "xlsqr" || cmd === "aiask") {
+      return msg.channel.send("🛑 **Bot offline.** Un admin deve usare `!startbot` per riattivarlo.");
+    }
+    return;
+  }
+
   try {
 
 // ========== HELP ==========
@@ -678,7 +716,11 @@ if (cmd === "help") return msg.channel.send([
   "`!reload` / `!debug`",
   "`!clearconv` — Reset AI conversation",
   "",
-  `**Cache:** ${fileCache.length} files | **AI:** ${GEMINI_API_KEY ? "✅ Gemini" : "❌"}`
+  "**🔐 Moderazione:**",
+  "`!stopbot` — Disattiva il bot per tutti",
+  "`!startbot` — Riattiva il bot",
+  "",
+  `**Cache:** ${fileCache.length} files | **AI:** ${GEMINI_API_KEY ? "✅ Gemini" : "❌"}${D.botStopped ? " | ⚠️ BOT STOPPATO" : ""}`
 ].join("\n"));
 
 // ========== ASK AI ==========
