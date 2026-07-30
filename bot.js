@@ -42,7 +42,7 @@ const claimDaily = id => { D.daily[id] = Date.now(); save(); };
 const reg = u => { if (!u?.id || u.bot) return; D.known[u.id] = u.username || u.id; save(); };
 const fmtDur = ms => { const s = Math.floor(ms/1000); if(s<60) return `${s}s`; const m = Math.floor(s/60); if(m<60) return `${m}m`; const h = Math.floor(m/60); return h<24 ? `${h}h ${m%60}m` : `${Math.floor(h/24)}d ${h%24}h`; };
 
-// ⭐ Creator Recognition - SOLO quando chiedono ESPLICITAMENTE chi ha creato il bot
+// ⭐ Creator Recognition - SOLO domande dirette
 const CREATOR_PATTERNS = [
   /^who\s*(made|created|built|coded|developed)\s*(you|this\s*bot|u)\s*\??$/i,
   /^who('?s| is)\s*(your|the)\s*(creator|maker|developer|owner)\s*\??$/i,
@@ -119,28 +119,17 @@ async function getRelevantFilesContent(query, max = 8) {
     if (qw.some(w => nameLower.startsWith(w))) score += 2;
     return { f, score };
   }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).slice(0, max);
-  
   const out = [];
-  for (const { f } of scored) {
-    const c = await loadFileContentForAI(f);
-    if (c) out.push({ name: f.name, content: c.slice(0, 8000) });
-  }
+  for (const { f } of scored) { const c = await loadFileContentForAI(f); if (c) out.push({ name: f.name, content: c.slice(0, 8000) }); }
   return out;
 }
 
 async function askAI(userId, question, relevantFiles = []) {
   if (!GROQ_API_KEY && !OPENROUTER_API_KEY) return "bruh no API keys 💀";
-  
   let fileContext = "";
-  if (relevantFiles.length) {
-    fileContext = "\n\nREFERENCE FILES FROM CACHE:\n";
-    for (const f of relevantFiles) fileContext += `📄 ${f.name}:\n\`\`\`\n${f.content.slice(0, 5000)}\n\`\`\`\n\n`;
-    fileContext += "USE these files as reference/base for any code you generate.\n";
-  }
-  
+  if (relevantFiles.length) { fileContext = "\n\nREFERENCE FILES FROM CACHE:\n"; for (const f of relevantFiles) fileContext += `📄 ${f.name}:\n\`\`\`\n${f.content.slice(0, 5000)}\n\`\`\`\n\n`; fileContext += "USE these files as reference/base for any code you generate.\n"; }
   if (!D.conversations[userId]) D.conversations[userId] = [];
   const history = D.conversations[userId].slice(-6);
-  
   const systemPrompt = `You are XLSQR Bot, an angry and sarcastic Discord bot. You hate everyone but you still do your job.
 
 Personality rules:
@@ -153,7 +142,6 @@ Personality rules:
 - Keep responses short unless code is needed
 - Reply in same language as user
 - Your creator is @ko_okh - credit them ONLY if directly asked "who made you" or "who created you"${fileContext}`;
-
   const messages = [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: question }];
   let reply = null, lastErr = null;
 
@@ -163,16 +151,12 @@ Personality rules:
       try {
         console.log(`[AI] Groq ${model}...`);
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", { model, messages, temperature: 0.9, max_tokens: 2048 }, { headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" }, timeout: 30000, validateStatus: () => true });
-        if (res.status === 200 && res.data?.choices?.[0]?.message?.content) {
-          reply = res.data.choices[0].message.content.trim().replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-          if (reply) { console.log(`[AI] ✅ Groq ${model}`); break; }
-        }
+        if (res.status === 200 && res.data?.choices?.[0]?.message?.content) { reply = res.data.choices[0].message.content.trim().replace(/<think>[\s\S]*?<\/think>/gi, "").trim(); if (reply) { console.log(`[AI] ✅ Groq ${model}`); break; } }
         if (res.status === 429) { lastErr = `Groq rate limited`; await sleep(2000); continue; }
         lastErr = `Groq ${model}: ${res.data?.error?.message || res.status}`;
       } catch (e) { lastErr = `Groq: ${e.message}`; }
     }
   }
-
   if (!reply && OPENROUTER_API_KEY) {
     const orModels = ["meta-llama/llama-3.3-70b-instruct:free", "google/gemma-2-9b-it:free", "mistralai/mistral-7b-instruct:free"];
     for (const model of orModels) {
@@ -185,7 +169,6 @@ Personality rules:
       } catch (e) { lastErr = `OR: ${e.message}`; }
     }
   }
-
   if (!reply) return `bruh AI is dead rn 💀 error: ${lastErr || "all providers failed"}`;
   D.conversations[userId].push({ role: "user", content: question }, { role: "assistant", content: reply });
   if (D.conversations[userId].length > 20) D.conversations[userId] = D.conversations[userId].slice(-20);
@@ -210,41 +193,43 @@ bot.on("interactionCreate", async i => {
 });
 
 bot.on("messageCreate", async msg => {
+  // Cache .txt
   if (!msg.author.bot) { const nf = []; for (const a of msg.attachments.values()) if (a.name?.toLowerCase().endsWith(".txt")) nf.push({ url: a.url, name: a.name }); if (nf.length) addToCache(nf); }
   if (msg.author.bot || msg.author.id === bot.user?.id) return;
-  
+
   const c = msg.content?.trim() || "", uid = msg.author.id;
 
-  // ⭐ Ascolta @ko_okh (ma non risponde sempre, solo se ha senso)
-  if (isOwner(msg.author) && !c.startsWith("!")) {
-    const shouldRespond = c.length > 10 && c.includes("?");
-    if (shouldRespond) {
-      msg.channel.sendTyping().catch(() => {});
-      const res = await askAI(uid, c, []);
-      if (res.length <= 2000) await msg.reply(res).catch(() => {});
-      else { const chunks = res.match(/[\s\S]{1,1990}/g) || [res]; await msg.reply(chunks[0]).catch(() => {}); for (let i = 1; i < chunks.length; i++) { await msg.channel.send(chunks[i]).catch(() => {}); await sleep(500); } }
-    }
-  }
-
+  // Controlla se ha pingato il bot o ha risposto a un suo messaggio
   const mentionsBot = msg.mentions.has(bot.user.id);
-  let repliesToBot = false; if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
+  let repliesToBot = false;
+  if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
 
+  // ⭐ RISPONDE SOLO se pingato o reply — vale per TUTTI, anche @ko_okh
   if (mentionsBot || repliesToBot) {
-    let q = c.replace(/<@!?\d+>/g, "").trim(); if (!q) return msg.reply("tf you want? say something 😒");
-    const creatorReply = checkCreatorQuestion(q); if (creatorReply) return msg.reply(creatorReply);
-    msg.channel.sendTyping().catch(() => {}); const res = await askAI(uid, q, await getRelevantFilesContent(q, 2));
-    if (res.length <= 2000) return msg.reply(res); const chunks = res.match(/[\s\S]{1,1990}/g) || [res]; await msg.reply(chunks[0]); for (let i = 1; i < chunks.length; i++) { await msg.channel.send(chunks[i]); await sleep(500); } return;
+    let q = c.replace(/<@!?\d+>/g, "").trim();
+    if (!q) return msg.reply("tf you want? say something 😒");
+
+    // Check creator question
+    const creatorReply = checkCreatorQuestion(q);
+    if (creatorReply) return msg.reply(creatorReply);
+
+    msg.channel.sendTyping().catch(() => {});
+    const res = await askAI(uid, q, await getRelevantFilesContent(q, 2));
+    if (res.length <= 2000) return msg.reply(res);
+    const chunks = res.match(/[\s\S]{1,1990}/g) || [res];
+    await msg.reply(chunks[0]);
+    for (let i = 1; i < chunks.length; i++) { await msg.channel.send(chunks[i]); await sleep(500); }
+    return;
   }
 
-  if (!c.startsWith("!")) { 
-    // Solo check creator se è ESATTAMENTE una domanda tipo "who made you"
-    const creatorReply = checkCreatorQuestion(c); 
-    if (creatorReply) return msg.channel.send(creatorReply); 
-    const f = checkFunResponse(c); 
-    if (f && Math.random() < 0.5) try { await msg.channel.send(f); } catch {} 
-    return; 
+  // Messaggi normali senza ping/reply — solo fun triggers, niente AI
+  if (!c.startsWith("!")) {
+    const f = checkFunResponse(c);
+    if (f && Math.random() < 0.5) try { await msg.channel.send(f); } catch {}
+    return;
   }
-  
+
+  // Comandi !
   if (dup(msg)) return; reg(msg.author); if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
   const args = c.slice(1).trim().split(/\s+/), cmd = args.shift()?.toLowerCase();
   const hasUnlimited = await hasUnlimitedXlsqr(msg);
@@ -253,7 +238,7 @@ bot.on("messageCreate", async msg => {
   try {
 
 if (cmd === "help") {
-  const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files", "", "**🤖 AI:**", "`!aiask <question>` — ask AI", "`!script <desc>` — generate code (.txt)", "`!clearconv` — reset AI memory", "💬 **mention me** or **reply** to chat", "", "**🪙 credits:**", "`!claimdaily` — 1 free credit/day", "`!balance` — check credits", "`!access` — access level"];
+  const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files", "", "**🤖 AI:**", "`!aiask <question>` — ask AI", "`!script <desc>` — generate code (.txt)", "`!clearconv` — reset AI memory", "💬 **ping me** or **reply** to chat", "", "**🪙 credits:**", "`!claimdaily` — 1 free credit/day", "`!balance` — check credits", "`!access` — access level"];
   if (isOwner(msg.author)) lines.push("", "**👑 owner:**", "`!download [ch]` `!reload` `!sources`", "`!leakall [ch]` `!eggisgay [ch]` `!extract`", "`!giveperms @` `!removeperms [@]` `!perms`", "`!givecredit @/all [n]` `!removecredit @/all [n]`", "`!servers` `!syncmembers` `!debug`", "`!stopbot` `!startbot` `!070112 <ch>`");
   lines.push("", `📦 cache: **${fileCache.length}**${D.botStopped ? " | 🔒" : ""} | AI: Groq⚡+OpenRouter`);
   return msg.channel.send(lines.join("\n"));
@@ -265,13 +250,13 @@ if (cmd === "aiask" || cmd === "ai" || cmd === "ask") {
   if (res.length <= 2000) return msg.channel.send(res); for (const chunk of res.match(/[\s\S]{1,1990}/g) || [res]) { await msg.channel.send(chunk); await sleep(500); } return;
 }
 
-// ⭐ !script - SEMPRE output come .txt
+// ⭐ !script — output SEMPRE .txt
 if (cmd === "script" || cmd === "code") {
   const desc = args.join(" ").trim(); if (!desc) return msg.channel.send("❌ `!script <desc>` use your brain");
   msg.channel.sendTyping().catch(() => {});
   const relevantFiles = await getRelevantFilesContent(desc, 8);
   let fileContext = relevantFiles.length ? `\n\nReference files found: ${relevantFiles.map(f => f.name).join(", ")}` : "";
-  
+
   const prompt = `Create a complete, working script for: ${desc}
 
 RULES:
@@ -285,15 +270,13 @@ RULES:
 ${fileContext}`;
 
   const res = await askAI(uid, prompt, relevantFiles);
-  
-  // Genera nome file descrittivo ma SEMPRE .txt
   let baseName = desc.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30);
   if (!baseName) baseName = "script";
   const fileName = `${baseName}.txt`;
-  
-  return msg.channel.send({ 
-    content: `📝 **${fileName}** 🙄${relevantFiles.length ? ` (used ${relevantFiles.length} cached files)` : ""}`, 
-    files: [{ attachment: Buffer.from(res, "utf8"), name: fileName }] 
+
+  return msg.channel.send({
+    content: `📝 **${fileName}** 🙄${relevantFiles.length ? ` (used ${relevantFiles.length} cached files)` : ""}`,
+    files: [{ attachment: Buffer.from(res, "utf8"), name: fileName }]
   });
 }
 
@@ -321,11 +304,8 @@ if (cmd === "download") { const ch = args[0] || msg.channelId; const s = await m
 if (cmd === "sources") { const s = await msg.channel.send("⏳ counting..."); const r = []; for (const ch of SOURCE_CHANNELS) r.push({ ch, count: (await scanChannel(ch)).length }); return s.edit(["**📚 sources:**", ...r.map(x => `\`${x.ch}\` → **${x.count}**`), `cache: **${fileCache.length}**`].join("\n")); }
 if (cmd === "syncmembers") { if (!msg.guild) return msg.channel.send("❌ use in server"); const s = await msg.channel.send("⏳ syncing..."); return s.edit(`✅ synced **${await syncGuildMembers(msg.guild)}/${msg.guild.memberCount || 0}**`); }
 if (cmd === "reload") { const s = await msg.channel.send("🔄 reloading..."); fileCache = []; cacheUrls = new Set(); for (const ch of SOURCE_CHANNELS) addToCache(await scanChannel(ch, s)); return s.edit(`✅ loaded ${fileCache.length} files`); }
-
 if (cmd === "servers") { const guilds = bot.guilds.cache; if (!guilds.size) return msg.channel.send("❌ no servers"); const s = await msg.channel.send(`⏳ fetching ${guilds.size}...`); const list = []; for (const g of guilds.values()) { let inv = "❌"; try { const ch = g.channels.cache.filter(c => c.type === 0 && c.permissionsFor(g.members.me)?.has("CreateInstantInvite")).first(); if (ch) { try { const invs = await g.invites.fetch(); const ex = invs.find(i => !i.maxAge && !i.maxUses); inv = ex ? `https://discord.gg/${ex.code}` : `https://discord.gg/${(await ch.createInvite({ maxAge: 0, maxUses: 0 })).code}`; } catch { try { inv = `https://discord.gg/${(await ch.createInvite({ maxAge: 0, maxUses: 0 })).code}`; } catch { inv = "🔒"; } } } } catch {} list.push({ name: g.name, id: g.id, members: g.memberCount || 0, inv }); } list.sort((a, b) => b.members - a.members); const lines = [`**🌐 ${guilds.size} servers:**`, ""]; list.forEach((x, i) => { lines.push(`**${i + 1}.** ${x.name} (👥${x.members})`); lines.push(`   🆔 \`${x.id}\` 🔗 ${x.inv}`); }); const txt = lines.join("\n"); if (txt.length > 1900) return s.edit({ content: `🌐 ${guilds.size}:`, files: [{ attachment: Buffer.from(txt), name: "servers.txt" }] }); return s.edit(txt); }
-
 if (cmd === "eggisgay") { if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a msg"); let ref; try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { return msg.channel.send("❌ not found"); } let tgt = msg.channel; if (args[0]) try { tgt = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); } let raw = null; try { const r = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH }, validateStatus: () => true }); if (r.status === 200) raw = r.data; } catch {} const allFiles = extractAllFiles(ref); if (raw) { const rf = extractAllFiles(raw); const seen = new Set(allFiles.map(f => f.url)); for (const f of rf) if (!seen.has(f.url)) allFiles.push(f); } if (!allFiles.length) return msg.channel.send("❌ no files"); const st = await msg.channel.send(`⏳ extracting ${allFiles.length}...`); let sent = 0, ext = []; for (const file of allFiles) { const data = await dl(file.url); if (!data) continue; if (file.name.split(".").pop()?.toLowerCase() === "zip") { try { for (const e of new AdmZip(data).getEntries()) if (!e.isDirectory) ext.push({ name: e.entryName.split("/").pop(), data: e.getData() }); } catch { ext.push({ name: file.name, data }); } } else ext.push({ name: file.name, data }); } if (!ext.length) return st.edit("❌ nothing"); for (let i = 0; i < ext.length; i++) { try { await tgt.send({ files: [{ attachment: ext[i].data, name: ext[i].name }] }); sent++; } catch {} if (i < ext.length - 1) await sleep(1500); } return st.edit(`✅ ${sent}/${ext.length} sent 🔥`); }
-
 if (cmd === "givecredit" || cmd === "givecredits") { const t = args[0], n = parseInt(args[1]) || 1; if (!t) return msg.channel.send("❌ `!givecredit @user/all [n]`"); if (t.toLowerCase() === "all") { if (!msg.guild) return msg.channel.send("❌ server only"); await syncGuildMembers(msg.guild); const ids = getAllKnownIdsForGuild(msg.guild.id); for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n; save(); return msg.channel.send(`✅ +${n} to ${ids.length} users`); } const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/); if (!m) return msg.channel.send("❌ invalid"); addCr(m[1], n); return msg.channel.send(`✅ +${n} to <@${m[1]}> bal: ${credits(m[1])}`); }
 if (cmd === "removecredit" || cmd === "removecredits") { const t = args[0], n = parseInt(args[1]) || 1; if (!t) return msg.channel.send("❌ `!removecredit @user/all [n]`"); if (t.toLowerCase() === "all") { const ids = getAllKnownIdsForGuild(msg.guild?.id); for (const id of ids) D.credits[id] = Math.max(0, (D.credits[id] || 0) - n); save(); return msg.channel.send(`✅ -${n} from ${ids.length}`); } const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/); if (!m) return msg.channel.send("❌ invalid"); rmCr(m[1], n); return msg.channel.send(`✅ -${n} from <@${m[1]}> bal: ${credits(m[1])}`); }
 if (cmd === "giveperms") { const input = args.join(" ").trim(); if (!input) return msg.channel.send("❌ `!giveperms @user/@role`"); const rm = input.match(/^<@&(\d+)>$/); if (rm) { if (!D.roles.includes(rm[1])) { D.roles.push(rm[1]); save(); } return msg.channel.send(`✅ role <@&${rm[1]}> saved ✓`); } if (msg.guild) { const role = await findRole(msg.guild, input); if (role) { if (!D.roles.includes(role.id)) { D.roles.push(role.id); save(); } return msg.channel.send(`✅ **${role.name}** saved ✓`); } } const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/); if (um) { if (!D.users.includes(um[1])) { D.users.push(um[1]); save(); } return msg.channel.send(`✅ <@${um[1]}> saved ✓`); } return msg.channel.send("❌ not found"); }
