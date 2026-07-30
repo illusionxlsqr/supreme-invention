@@ -3,7 +3,7 @@ const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
 const fs = require("fs");
-const path = require("path");
+const path = require("path")
 
 // ================= CONFIG =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
