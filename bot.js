@@ -11,7 +11,8 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "sk-or-v1-150e944fe
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
-const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
+// ⭐ AGGIUNTO 1416855393375617126 come owner
+const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377,1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
 const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
@@ -82,7 +83,6 @@ const sigs=new Map();function dup(m){const now=Date.now();for(const[k,t]of sigs)
 
 async function hasRole(msg,uid){if(!msg.guild||!D.roles.length)return false;try{const m=msg.member||await msg.guild.members.fetch(uid);return D.roles.some(r=>m.roles.cache.has(r));}catch{return false;}}
 async function hasUnlimitedXlsqr(msg){if(isOwner(msg.author))return true;if(D.users.includes(msg.author.id))return true;return hasRole(msg,msg.author.id);}
-// ⭐ Check se ha perms (ruolo o user) — senza owner
 async function hasPerms(msg){if(D.users.includes(msg.author.id))return true;return hasRole(msg,msg.author.id);}
 function hasPermsById(member){if(!member)return false;if(D.users.includes(member.id||member.user?.id))return true;if(D.roles.length&&member.roles?.cache)return D.roles.some(r=>member.roles.cache.has(r));return false;}
 async function findRole(guild,input){if(!guild)return null;try{await guild.roles.fetch();}catch{}let m=input.match(/^<@&(\d+)>$/);if(m)return guild.roles.cache.get(m[1])||null;m=input.match(/^(\d+)$/);if(m)return guild.roles.cache.get(m[1])||null;const cl=input.replace(/^@/,"").toLowerCase();return guild.roles.cache.find(r=>r.name.toLowerCase()===cl)||guild.roles.cache.find(r=>r.name.toLowerCase().includes(cl))||null;}
@@ -143,21 +143,11 @@ const row_ = (i, t) => new ActionRowBuilder().addComponents(new ButtonBuilder().
 
 bot.on("interactionCreate", async i => {
   if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
-
-  // ⭐ Bot stoppato: owner e chi ha perms possono usare bottoni, il resto no
-  if (D.botStopped && !isOwnerById(i.user.id) && !hasPermsById(i.member)) {
-    return i.reply({ content: "🔒 bot locked. cope 💀", ephemeral: true });
-  }
-
+  if (D.botStopped && !isOwnerById(i.user.id) && !hasPermsById(i.member)) return i.reply({ content: "🔒 bot locked. cope 💀", ephemeral: true });
   const s = searches.get(i.message.id);
   if (!s) return i.reply({ content: "❌ expired 💀", ephemeral: true });
   if (i.user.id !== s.uid) return i.reply({ content: "❌ not yours", ephemeral: true });
-
-  // Se bot attivo, check perms normali
-  if (!D.botStopped && !isOwnerById(i.user.id) && !hasPermsById(i.member)) {
-    return i.reply({ content: "❌ no perms, cope 💀", ephemeral: true });
-  }
-
+  if (!D.botStopped && !isOwnerById(i.user.id) && !hasPermsById(i.member)) return i.reply({ content: "❌ no perms, cope 💀", ephemeral: true });
   await i.deferUpdate();
   s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
   const f = s.m[s.idx], d = await dl(f.url);
@@ -173,14 +163,8 @@ bot.on("messageCreate", async msg => {
   const userIsOwner = isOwner(msg.author);
   const userHasPerms = await hasPerms(msg);
 
-  // ⭐ BOT STOPPATO
   if (D.botStopped) {
-    // Owner: può fare tutto
-    // Chi ha perms (ruolo/user da giveperms): può usare SOLO !xlsqr
-    // Tutti gli altri: bloccati
-
     if (!userIsOwner && !userHasPerms) {
-      // Utente normale — blocca tutto
       const mentionsBot = msg.mentions.has(bot.user.id);
       let repliesToBot = false;
       if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
@@ -188,10 +172,8 @@ bot.on("messageCreate", async msg => {
       if (c.startsWith("!")) return msg.channel.send("🔒 **bot locked.** no perms L");
       return;
     }
-
     if (userHasPerms && !userIsOwner) {
-      // Ha perms ma non è owner — può fare SOLO !xlsqr
-      if (!c.startsWith("!")) return; // ignora messaggi normali
+      if (!c.startsWith("!")) return;
       if (dup(msg)) return;
       const args = c.slice(1).trim().split(/\s+/), cmd = args.shift()?.toLowerCase();
       if (cmd === "xlsqr") {
@@ -208,11 +190,7 @@ bot.on("messageCreate", async msg => {
       }
       return msg.channel.send("🔒 **bot locked.** you can only use `!xlsqr`");
     }
-
-    // Owner — continua normalmente sotto
   }
-
-  // BOT ATTIVO (o owner quando stoppato)
 
   if (c.startsWith("!")) {
     if (dup(msg)) return; reg(msg.author); if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
@@ -243,7 +221,6 @@ bot.on("messageCreate", async msg => {
 });
 
 async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
-
   if (isOwner(msg.author)) {
     if (cmd === "stopbot") { D.botStopped = true; save(); return msg.channel.send("🔒 **locked** — solo owner e chi ha perms (!xlsqr only)"); }
     if (cmd === "startbot") { D.botStopped = false; save(); return msg.channel.send("🔓 **unlocked**"); }
@@ -256,43 +233,16 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
     return msg.channel.send(lines.join("\n"));
   }
 
-  if (cmd === "aiask" || cmd === "ai" || cmd === "ask") {
-    const q = args.join(" ").trim(); if (!q) return msg.channel.send("❌ `!aiask <question>` dumbass");
-    msg.channel.sendTyping().catch(() => {}); const res = await askAI(uid, q, await getRelevantFilesContent(q, 3));
-    if (res.length <= 2000) return msg.channel.send(res); for (const chunk of res.match(/[\s\S]{1,1990}/g) || [res]) { await msg.channel.send(chunk); await sleep(500); } return;
-  }
+  if (cmd === "aiask" || cmd === "ai" || cmd === "ask") { const q = args.join(" ").trim(); if (!q) return msg.channel.send("❌ `!aiask <question>` dumbass"); msg.channel.sendTyping().catch(() => {}); const res = await askAI(uid, q, await getRelevantFilesContent(q, 3)); if (res.length <= 2000) return msg.channel.send(res); for (const chunk of res.match(/[\s\S]{1,1990}/g) || [res]) { await msg.channel.send(chunk); await sleep(500); } return; }
 
-  if (cmd === "script" || cmd === "code") {
-    const desc = args.join(" ").trim(); if (!desc) return msg.channel.send("❌ `!script <desc>` use your brain");
-    msg.channel.sendTyping().catch(() => {});
-    const relevantFiles = await getRelevantFilesContent(desc, 8);
-    let fileContext = relevantFiles.length ? `\n\nReference files found: ${relevantFiles.map(f => f.name).join(", ")}` : "";
-    const prompt = `Create a complete, working script for: ${desc}\n\nRULES:\n- If reference files are provided, USE THEM as base/template\n- Include FULL working code, no placeholders\n- If it's a web project: include complete HTML/CSS/JS with UI\n- If it's a bot/tool: include ALL dependencies and setup\n- Add install/run instructions as comments at the top\n- Error handling, clean code, helpful comments\n- The script must be COMPLETE and READY TO RUN\n${fileContext}`;
-    const res = await askAI(uid, prompt, relevantFiles);
-    let baseName = desc.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30); if (!baseName) baseName = "script";
-    return msg.channel.send({ content: `📝 **${baseName}.txt** 🙄${relevantFiles.length ? ` (used ${relevantFiles.length} cached files)` : ""}`, files: [{ attachment: Buffer.from(res, "utf8"), name: `${baseName}.txt` }] });
-  }
+  if (cmd === "script" || cmd === "code") { const desc = args.join(" ").trim(); if (!desc) return msg.channel.send("❌ `!script <desc>` use your brain"); msg.channel.sendTyping().catch(() => {}); const relevantFiles = await getRelevantFilesContent(desc, 8); let fileContext = relevantFiles.length ? `\n\nReference files found: ${relevantFiles.map(f => f.name).join(", ")}` : ""; const prompt = `Create a complete, working script for: ${desc}\n\nRULES:\n- If reference files are provided, USE THEM as base/template\n- Include FULL working code, no placeholders\n- If it's a web project: include complete HTML/CSS/JS with UI\n- If it's a bot/tool: include ALL dependencies and setup\n- Add install/run instructions as comments at the top\n- Error handling, clean code, helpful comments\n- The script must be COMPLETE and READY TO RUN\n${fileContext}`; const res = await askAI(uid, prompt, relevantFiles); let baseName = desc.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 30); if (!baseName) baseName = "script"; return msg.channel.send({ content: `📝 **${baseName}.txt** 🙄${relevantFiles.length ? ` (used ${relevantFiles.length} cached files)` : ""}`, files: [{ attachment: Buffer.from(res, "utf8"), name: `${baseName}.txt` }] }); }
 
   if (["clearconv", "resetai", "newchat"].includes(cmd)) { D.conversations[uid] = []; save(); return msg.channel.send("✅ cleared 🙄"); }
   if (cmd === "claimdaily") { if (!canDaily(uid)) { const t = new Date(); t.setDate(t.getDate() + 1); t.setHours(0,0,0,0); return msg.channel.send(`⏰ wait **${fmtDur(t.getTime() - Date.now())}** greedy mf`); } addCr(uid, 1); claimDaily(uid); return msg.channel.send(`✅ +1 🪙 bal: **${credits(uid)}**`); }
   if (cmd === "balance" || cmd === "bal") return msg.channel.send(`💰 **${credits(uid)}** credits`);
   if (cmd === "access") { if (isOwner(msg.author)) return msg.channel.send("👑 **owner** — full access"); if (D.users.includes(uid)) return msg.channel.send("✅ **allowed user** — unlimited xlsqr"); if (await hasRole(msg, uid)) return msg.channel.send("🔑 **allowed role** — unlimited xlsqr"); return msg.channel.send(`🪙 **${credits(uid)}** credits. poor.`); }
 
-  if (cmd === "xlsqr") {
-    const q = args.join(" ").trim().toLowerCase();
-    if (!q) return msg.channel.send("❌ `!xlsqr <query>`");
-    if (!fileCache.length) return msg.channel.send("❌ cache empty");
-    if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ no credits. `!claimdaily`");
-    const qw = q.split(/\s+/), matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
-    if (!matches.length) return msg.channel.send(`❌ nothing for "${q}"`);
-    if (!hasUnlimited) rmCr(uid, 1);
-    const f = matches[0], d = await dl(f.url);
-    if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ download failed"); }
-    if (!hasUnlimited) return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 -1 · bal: **${credits(uid)}**\n${bar}`, files: [{ attachment: d, name: f.name }] });
-    const sent = await msg.channel.send({ content: content_(f.name, q, 0, matches.length), files: [{ attachment: d, name: f.name }], components: matches.length > 1 ? [row_(0, matches.length)] : [] });
-    if (matches.length > 1) searches.set(sent.id, { m: matches, idx: 0, q, uid });
-    return;
-  }
+  if (cmd === "xlsqr") { const q = args.join(" ").trim().toLowerCase(); if (!q) return msg.channel.send("❌ `!xlsqr <query>`"); if (!fileCache.length) return msg.channel.send("❌ cache empty"); if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ no credits. `!claimdaily`"); const qw = q.split(/\s+/), matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w))); if (!matches.length) return msg.channel.send(`❌ nothing for "${q}"`); if (!hasUnlimited) rmCr(uid, 1); const f = matches[0], d = await dl(f.url); if (!d) { if (!hasUnlimited) addCr(uid, 1); return msg.channel.send("❌ download failed"); } if (!hasUnlimited) return msg.channel.send({ content: `${bar}\n📄 **${f.name}**\n🔎 \`${q}\` · **${matches.length}** results\n🪙 -1 · bal: **${credits(uid)}**\n${bar}`, files: [{ attachment: d, name: f.name }] }); const sent = await msg.channel.send({ content: content_(f.name, q, 0, matches.length), files: [{ attachment: d, name: f.name }], components: matches.length > 1 ? [row_(0, matches.length)] : [] }); if (matches.length > 1) searches.set(sent.id, { m: matches, idx: 0, q, uid }); return; }
 
   if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
   if (!isOwner(msg.author)) return;
