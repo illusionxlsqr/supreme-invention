@@ -16,7 +16,6 @@ const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "141685539337561
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
 const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
 const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1530426488112021674,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
-const XL_DEST_CHANNEL = "1532052275982368959"; // ⭐ !xxiloveyou destination
 const PORT = process.env.PORT || 3000;
 const AUTH = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
 
@@ -245,7 +244,7 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
 
   if (cmd === "help") {
     const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files", "", "**🤖 AI:**", "`!aiask <question>` — ask AI", "`!script <desc>` — generate code (.txt)", "`!clearconv` — reset AI memory", "💬 **ping me** or **reply** to chat", "", "**🪙 credits:**", "`!claimdaily` — 1 free credit/day", "`!balance` — check credits", "`!access` — access level"];
-    if (isOwner(msg.author)) lines.push("", "**👑 owner:**", "`!download [ch]` `!reload` `!sources`", "`!leakall [ch]` `!eggisgay [ch]` `!extract`", "`!xxiloveyou <ch>` — invia .txt a destinazione", "`!giveperms @` `!removeperms [@]` `!perms`", "`!givecredit @/all [n]` `!removecredit @/all [n]`", "`!servers` `!syncmembers` `!debug`", "`!stopbot` `!startbot` `!070112 <ch>`");
+    if (isOwner(msg.author)) lines.push("", "**👑 owner:**", "`!download [ch]` `!reload` `!sources`", "`!leakall [ch]` `!eggisgay [ch]` `!extract`", "`!xxiloveyou <sorgente> <dest>` — invia .txt tra canali", "`!giveperms @` `!removeperms [@]` `!perms`", "`!givecredit @/all [n]` `!removecredit @/all [n]`", "`!servers` `!syncmembers` `!debug`", "`!stopbot` `!startbot` `!070112 <ch>`");
     lines.push("", `📦 cache: **${fileCache.length}**${D.botStopped ? " | 🔒" : ""} | AI: Groq⚡+OpenRouter`);
     return msg.channel.send(lines.join("\n"));
   }
@@ -306,12 +305,14 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
     return st.edit(`✅ ⚡ done: ${sent}/${extracted.length} sent${failed ? ` (❌${failed})` : ""}`);
   }
 
-  // ⭐ XXILOVEYOU — prende tutti i .txt dal canale e li manda alla destinazione
+  // ⭐ XXILOVEYOU — SCEGLI TU i canali: <sorgente> <destinazione>
   if (cmd === "xxiloveyou") {
     const sourceChId = args[0];
-    if (!sourceChId) return msg.channel.send("❌ `!xxiloveyou <channel_id>`");
+    const destChId = args[1];
+    if (!sourceChId || !destChId) return msg.channel.send("❌ `!xxiloveyou <canale_sorgente> <canale_destinazione>`");
+
     let destCh;
-    try { destCh = await bot.channels.fetch(XL_DEST_CHANNEL); } catch { return msg.channel.send("❌ can't reach dest channel"); }
+    try { destCh = await bot.channels.fetch(destChId); } catch { return msg.channel.send("❌ can't reach dest channel"); }
 
     const st = await msg.channel.send(`⚡ scanning ${sourceChId}...`);
     const files = await scanChannel(sourceChId, st);
@@ -327,7 +328,7 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
     const valid = downloaded.filter(Boolean);
     if (!valid.length) return st.edit("❌ all downloads failed");
 
-    await st.edit(`⚡ sending ${valid.length} files to dest...`);
+    await st.edit(`⚡ sending ${valid.length} files to ${destChId}...`);
     let sent = 0, failed = 0;
 
     for (let i = 0; i < valid.length; i += 10) {
@@ -338,7 +339,7 @@ async function handleCommand(msg, cmd, args, uid, hasUnlimited) {
     }
 
     addToCache(files);
-    return st.edit(`✅ done: ${sent}/${valid.length} .txt files sent to <#${XL_DEST_CHANNEL}>${failed ? ` (❌${failed} failed)` : ""}`);
+    return st.edit(`✅ done: ${sent}/${valid.length} .txt files sent to <#${destChId}>${failed ? ` (❌${failed} failed)` : ""}`);
   }
 
   // ⭐ EXTRACT VELOCE
