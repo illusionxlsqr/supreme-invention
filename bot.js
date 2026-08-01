@@ -15,7 +15,7 @@ const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377,141685539337561
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
 const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
-const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1530426488112021674,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
+const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1532796352784891907,1530836835461369978").split(",").map(s => s.trim()).filter(Boolean);
 const PORT = process.env.PORT || 3000;
 const AUTH = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
 
