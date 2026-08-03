@@ -11,7 +11,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "sk-or-v1-150e944fe
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
-const OWNER_IDS = (process.env.OWNER_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
+const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
 const ARCHIVE_UPLOAD_SECRET = process.env.ARCHIVE_UPLOAD_SECRET || "";
@@ -258,6 +258,23 @@ bot.on("messageCreate", async msg => {
   if (msg.author.bot || msg.author.id === bot.user?.id) return;
   const c = msg.content?.trim() || "", uid = msg.author.id;
 
+  // ⭐ STOPBOT CHECK - runs BEFORE everything, blocks all non-permitted users
+  if (D.botStopped) {
+    // check if user has perms (owner, allowed user, allowed role)
+    let userAllowed = isOwner(msg.author) || D.users.includes(msg.author.id);
+    if (!userAllowed && msg.guild && D.roles.length) {
+      try { const member = msg.member || await msg.guild.members.fetch(msg.author.id); userAllowed = D.roles.some(r => member.roles.cache.has(r)); } catch {}
+    }
+    // if not allowed, completely ignore everything - no commands, no AI, no fun responses, nothing
+    if (!userAllowed) {
+      // only respond if they try a command or mention the bot, so they know it's locked
+      const mentionsBot = msg.mentions.has(bot.user.id);
+      const isCommand = c.startsWith("!");
+      if (mentionsBot || isCommand) return msg.channel.send("🔒 **bot locked.** you don't have perms, L");
+      return; // silently ignore everything else
+    }
+  }
+
   const mentionsBot = msg.mentions.has(bot.user.id);
   let repliesToBot = false;
   if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
@@ -280,7 +297,6 @@ bot.on("messageCreate", async msg => {
   if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
   const args = c.slice(1).trim().split(/\s+/), cmd = args.shift()?.toLowerCase();
   const hasUnlimited = await hasUnlimitedXlsqr(msg);
-  if (D.botStopped && !hasUnlimited) return msg.channel.send("🔒 **bot locked.** you don't have perms, L");
 
   try {
 
