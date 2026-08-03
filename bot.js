@@ -9,7 +9,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "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";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "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";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
-const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
+const TARGET_USER_ID = process.env.TARGET_USER_ID || "1533097239449305241";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
 const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
