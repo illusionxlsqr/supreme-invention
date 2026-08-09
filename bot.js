@@ -11,7 +11,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "sk-or-v1-150e944fe
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "1286668168575717377";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
-const OWNER_IDS = (process.env.OWNER_IDS || "1286668168575717377").split(",").map(s => s.trim()).filter(Boolean);
+const OWNER_IDS = (process.env.OWNER_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "1416855393375617126").split(",").map(s => s.trim()).filter(Boolean);
 const VIP_IDS = (process.env.VIP_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
@@ -211,7 +211,14 @@ async function fetchMsgs(chId, before) {
 }
 
 let fileCache = [], cacheUrls = new Set(), fileContents = new Map();
-function addToCache(files) { let n = 0; for (const f of files) { const nu = f.url.split('?')[0]; if (!cacheUrls.has(nu)) { cacheUrls.add(nu); cacheUrls.add(f.url); fileCache.unshift(f); n++; } } if (n) console.log(`[CACHE] +${n} → ${fileCache.length}`); return n; }
+const CACHE_FILE = path.join(__dirname, "cache.json");
+
+// ⭐ LOAD CACHE FROM DISK ON STARTUP
+try { if (fs.existsSync(CACHE_FILE)) { const cached = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8")); if (Array.isArray(cached) && cached.length) { fileCache = cached; for (const f of fileCache) { cacheUrls.add(f.url.split('?')[0]); cacheUrls.add(f.url); } console.log(`[CACHE] loaded ${fileCache.length} files from disk`); } } } catch {}
+
+function saveCache() { try { fs.writeFileSync(CACHE_FILE, JSON.stringify(fileCache)); } catch {} }
+
+function addToCache(files) { let n = 0; for (const f of files) { const nu = f.url.split('?')[0]; if (!cacheUrls.has(nu)) { cacheUrls.add(nu); cacheUrls.add(f.url); fileCache.unshift(f); n++; } } if (n) { console.log(`[CACHE] +${n} → ${fileCache.length}`); saveCache(); } return n; }
 async function scanChannel(chId, statusMsg = null) {
   const all = [], urls = new Set(); let last = null, batches = 0;
   while (true) { const msgs = await fetchMsgs(chId, last); if (!msgs?.length) break; batches++; for (const m of msgs) for (const f of extractTxt(m)) { const nu = f.url.split('?')[0]; if (!urls.has(nu)) { urls.add(nu); all.push(f); } } if (statusMsg && batches % 10 === 0) try { await statusMsg.edit(`⏳ ${batches * 100}+ msgs, ${all.length} files...`); } catch {} last = msgs[msgs.length - 1].id; if (msgs.length < 100) break; await sleep(350); }
@@ -578,13 +585,32 @@ bot.on("messageCreate", async msg => {
       let targetChannel = msg.channel;
       if (args[0]) { try { targetChannel = await bot.channels.fetch(args[0]); if (!targetChannel) throw 0; } catch { return msg.channel.send(`❌ channel \`${args[0]}\` not found`); } }
       const total = fileCache.length;
-      const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES**${args[0] ? ` to <#${args[0]}>` : ""}...\n⏳ this will take a while`);
+      const BATCH = 10; // 10 files per message (discord max)
+      const status = await msg.channel.send(`🔥 **LEAKING ${total} FILES** (${BATCH} per msg)${args[0] ? ` to <#${args[0]}>` : ""}...`);
       let sent = 0, failed = 0, lastUp = Date.now();
-      for (let i = 0; i < fileCache.length; i++) {
-        const f = fileCache[i], data = await smartDl(f);
-        if (data) { for (let a = 0; a < 3; a++) { try { await targetChannel.send({ content: `📄 \`${f.name}\` (${i + 1}/${total})`, files: [{ attachment: data, name: f.name }] }); sent++; break; } catch { if (a < 2) await sleep(3000 * (a + 1)); else failed++; } } } else failed++;
-        if (i % 20 === 0 || Date.now() - lastUp > 30000) { lastUp = Date.now(); await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 ${Math.round(((i + 1) / total) * 100)}% (${i + 1}/${total})\n✅ sent: **${sent}** | ❌ failed: **${failed}**\n⏱️ ETA: ~${sent > 0 ? Math.round(((total - i) * 2.5) / 60) : "?"} min`).catch(() => {}); }
-        await sleep(2000);
+
+      for (let i = 0; i < fileCache.length; i += BATCH) {
+        const batch = fileCache.slice(i, i + BATCH);
+        // download all files in batch in PARALLEL
+        const results = await Promise.all(batch.map(async f => {
+          const data = await smartDl(f);
+          return data ? { name: f.name, data } : null;
+        }));
+        const files = results.filter(Boolean).map(r => ({ attachment: r.data, name: r.name }));
+        if (files.length) {
+          for (let a = 0; a < 3; a++) {
+            try { await targetChannel.send({ files }); sent += files.length; break; }
+            catch { if (a < 2) await sleep(1000); else failed += files.length; }
+          }
+        }
+        failed += batch.length - (files.length || 0);
+        // update progress
+        if (Date.now() - lastUp > 5000) {
+          lastUp = Date.now();
+          const done = Math.min(i + BATCH, total);
+          await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 ${Math.round(done / total * 100)}% (${done}/${total})\n✅ sent: **${sent}** | ❌ failed: **${failed}**`).catch(() => {});
+        }
+        await sleep(500); // minimal delay between batches
       }
       return status.edit(`✅ **LEAK COMPLETE**\n📁 sent: **${sent}/${total}**\n❌ failed: **${failed}**${args[0] ? `\n📍 channel: <#${args[0]}>` : ""}`);
     }
