@@ -1,3 +1,107 @@
+// Add these new variables at the top with the other D object properties
+// Find this line: let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false };
+// Replace with:
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, adminUsers: [], guessNumber: null, guessChannel: null, guessWinner: null };
+
+// Then add these command handlers in the command section (before the owner-only section):
+
+    // ============ GIVE ADMIN COMMAND ============
+    if (cmd === "giveadmin") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can give admin perms");
+      const input = args.join(" ").trim();
+      if (!input) return msg.channel.send("❌ `!giveadmin @user`");
+      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+      if (!um) return msg.channel.send("❌ invalid user");
+      if (!D.adminUsers) D.adminUsers = [];
+      if (!D.adminUsers.includes(um[1])) {
+        D.adminUsers.push(um[1]);
+        save();
+      }
+      return msg.channel.send(`✅ <@${um[1]}> is now an admin! (all commands except nuke)`);
+    }
+
+    // ============ REMOVE ADMIN COMMAND ============
+    if (cmd === "removeadmin") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can remove admin perms");
+      const input = args.join(" ").trim();
+      if (!input) return msg.channel.send("❌ `!removeadmin @user` or `!removeadmin all`");
+      if (input.toLowerCase() === "all") {
+        D.adminUsers = [];
+        save();
+        return msg.channel.send("✅ all admins removed");
+      }
+      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+      if (!um) return msg.channel.send("❌ invalid user");
+      D.adminUsers = D.adminUsers.filter(id => id !== um[1]);
+      save();
+      return msg.channel.send(`✅ <@${um[1]}> is no longer an admin`);
+    }
+
+    // ============ GUESS NUMBER COMMAND ============
+    if (cmd === "guessnumber") {
+      if (!isOwner(msg.author) && !D.adminUsers?.includes(msg.author.id)) {
+        return msg.channel.send("❌ only owner or admins can start guessnumber");
+      }
+      
+      const number = Math.floor(Math.random() * 100) + 1;
+      D.guessNumber = number;
+      D.guessChannel = msg.channel.id;
+      D.guessWinner = null;
+      save();
+      
+      // Send DM to the user who started it
+      try {
+        await msg.author.send(`🔢 **GUESS NUMBER STARTED**\n📝 The number has been chosen!\n🎯 Guess between 1-100\n💀 Good luck!`);
+      } catch {
+        await msg.channel.send("❌ I can't DM you, enable DMs from server members!");
+      }
+      
+      await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-100 has been chosen!\n📨 Check your DMs for a hint!\n💀 Type your guess in this channel!`);
+      return;
+    }
+
+    // ============ GUESS CHECK (inside the main message handler) ============
+    // Add this after the reg(msg.author) line and before the command parsing
+    // This checks if a user is guessing a number
+    
+    // Check for guess number (non-command messages)
+    if (D.guessNumber !== null && D.guessChannel === msg.channel.id && !c.startsWith("!")) {
+      const guess = parseInt(c);
+      if (!isNaN(guess) && guess >= 1 && guess <= 100) {
+        if (guess === D.guessNumber) {
+          // WINNER!
+          D.guessWinner = msg.author.id;
+          const winner = msg.author;
+          await msg.channel.send(`🔒 **LOCK!**\n🎉 <@${winner.id}> **WON!**\n✅ The number was **${D.guessNumber}**`);
+          // Send DM to the game starter
+          try {
+            const starter = await bot.users.fetch(msg.author.id);
+            await starter.send(`🎉 **GAME OVER!**\n<@${winner.id}> won with the number ${D.guessNumber}!`);
+          } catch {}
+          D.guessNumber = null;
+          D.guessChannel = null;
+          D.guessWinner = null;
+          save();
+          return;
+        } else if (guess < D.guessNumber) {
+          await msg.channel.send(`⬆️ **${guess}** is too LOW! Try again!`);
+        } else {
+          await msg.channel.send(`⬇️ **${guess}** is too HIGH! Try again!`);
+        }
+        return;
+      }
+    }
+
+    // Then modify the isOwner check to also check for admin users
+    // Find this line: if (!isOwner(msg.author)) return;
+    // Replace with:
+    const isAdmin = D.adminUsers?.includes(msg.author.id) || false;
+    if (!isOwner(msg.author) && !isAdmin) return;
+
+// ==============================================
+// COMPLETE bot.js with all changes:
+// ==============================================
+
 // FIX: ReadableStream for Node.js < 18
 if (typeof ReadableStream === 'undefined') {
   try {
@@ -44,7 +148,7 @@ server.listen(PORT, "0.0.0.0", () => console.log(`[HTTP] :${PORT}`));
 if (!BOT_TOKEN) console.error("[FATAL] BOT_TOKEN missing");
 
 const DF = path.join(__dirname, "data.json");
-let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false };
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, adminUsers: [], guessNumber: null, guessChannel: null, guessWinner: null };
 try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8")) }; } catch {}
 if (!D.guildMembers) D.guildMembers = {};
 if (!D.conversations) D.conversations = {};
@@ -52,6 +156,10 @@ if (D.botStopped === undefined) D.botStopped = false;
 if (!D.users) D.users = [];
 if (!D.roles) D.roles = [];
 if (!D.credits) D.credits = {};
+if (!D.adminUsers) D.adminUsers = [];
+if (D.guessNumber === undefined) D.guessNumber = null;
+if (D.guessChannel === undefined) D.guessChannel = null;
+if (D.guessWinner === undefined) D.guessWinner = null;
 let saveTimer = null;
 function save() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} }, 300); }
 setTimeout(() => save(), 1000);
@@ -361,7 +469,35 @@ bot.on("messageCreate", async msg => {
     return;
   }
 
-  if (!c.startsWith("!")) return;
+  if (!c.startsWith("!")) {
+    // Check for guess number (non-command messages)
+    if (D.guessNumber !== null && D.guessChannel === msg.channel.id) {
+      const guess = parseInt(c);
+      if (!isNaN(guess) && guess >= 1 && guess <= 100) {
+        if (guess === D.guessNumber) {
+          D.guessWinner = msg.author.id;
+          const winner = msg.author;
+          await msg.channel.send(`🔒 **LOCK!**\n🎉 <@${winner.id}> **WON!**\n✅ The number was **${D.guessNumber}**`);
+          try {
+            const starter = await bot.users.fetch(msg.author.id);
+            await starter.send(`🎉 **GAME OVER!**\n<@${winner.id}> won with the number ${D.guessNumber}!`);
+          } catch {}
+          D.guessNumber = null;
+          D.guessChannel = null;
+          D.guessWinner = null;
+          save();
+          return;
+        } else if (guess < D.guessNumber) {
+          await msg.channel.send(`⬆️ **${guess}** is too LOW! Try again!`);
+        } else {
+          await msg.channel.send(`⬇️ **${guess}** is too HIGH! Try again!`);
+        }
+        return;
+      }
+    }
+    return;
+  }
+
   if (dup(msg)) return;
   reg(msg.author);
   if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
@@ -372,6 +508,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
+      if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game", "`!giveadmin @user` — give admin perms (owner only)", "`!removeadmin @user` — remove admin perms (owner only)");
       if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
       if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
@@ -427,6 +564,60 @@ bot.on("messageCreate", async msg => {
       return;
     }
 
+    // ============ GIVE ADMIN COMMAND ============
+    if (cmd === "giveadmin") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can give admin perms");
+      const input = args.join(" ").trim();
+      if (!input) return msg.channel.send("❌ `!giveadmin @user`");
+      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+      if (!um) return msg.channel.send("❌ invalid user");
+      if (!D.adminUsers) D.adminUsers = [];
+      if (!D.adminUsers.includes(um[1])) {
+        D.adminUsers.push(um[1]);
+        save();
+      }
+      return msg.channel.send(`✅ <@${um[1]}> is now an admin! (all commands except nuke)`);
+    }
+
+    // ============ REMOVE ADMIN COMMAND ============
+    if (cmd === "removeadmin") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can remove admin perms");
+      const input = args.join(" ").trim();
+      if (!input) return msg.channel.send("❌ `!removeadmin @user` or `!removeadmin all`");
+      if (input.toLowerCase() === "all") {
+        D.adminUsers = [];
+        save();
+        return msg.channel.send("✅ all admins removed");
+      }
+      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
+      if (!um) return msg.channel.send("❌ invalid user");
+      D.adminUsers = D.adminUsers.filter(id => id !== um[1]);
+      save();
+      return msg.channel.send(`✅ <@${um[1]}> is no longer an admin`);
+    }
+
+    // ============ GUESS NUMBER COMMAND ============
+    if (cmd === "guessnumber") {
+      if (!isOwner(msg.author) && !D.adminUsers?.includes(msg.author.id)) {
+        return msg.channel.send("❌ only owner or admins can start guessnumber");
+      }
+      
+      const number = Math.floor(Math.random() * 100) + 1;
+      D.guessNumber = number;
+      D.guessChannel = msg.channel.id;
+      D.guessWinner = null;
+      save();
+      
+      try {
+        await msg.author.send(`🔢 **GUESS NUMBER STARTED**\n📝 The number has been chosen!\n🎯 Guess between 1-100\n💀 Good luck!`);
+      } catch {
+        await msg.channel.send("❌ I can't DM you, enable DMs from server members!");
+      }
+      
+      await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-100 has been chosen!\n📨 Check your DMs for a hint!\n💀 Type your guess in this channel!`);
+      return;
+    }
+
     // ============ NUKE COMMAND (ONLY FOR NUKE OWNERS) ============
     if (cmd === "nuke") {
       if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
@@ -441,7 +632,6 @@ bot.on("messageCreate", async msg => {
       await msg.channel.send(`💀 **STARTING NUKE**\n📨 Sending **${amount}** messages in this channel...`);
       
       let sent = 0;
-      // Send in batches of 10 for maximum speed
       for (let i = 0; i < amount; i += 10) {
         const batchSize = Math.min(10, amount - i);
         const promises = [];
@@ -449,7 +639,6 @@ bot.on("messageCreate", async msg => {
           promises.push(channel.send(spamMsg).then(() => sent++).catch(() => {}));
         }
         await Promise.all(promises);
-        // Small delay between batches to avoid rate limit
         await sleep(50);
       }
       
@@ -458,8 +647,9 @@ bot.on("messageCreate", async msg => {
 
     if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
 
-    // ⛔ OWNER ONLY ⛔
-    if (!isOwner(msg.author)) return;
+    // ⛔ OWNER ONLY ⛔ (and admin can use these too)
+    const isAdmin = D.adminUsers?.includes(msg.author.id) || false;
+    if (!isOwner(msg.author) && !isAdmin) return;
 
     if (cmd === "stopbot") { D.botStopped = true; save(); return msg.channel.send("🔒 **bot locked.** peasants blocked"); }
     if (cmd === "startbot") { D.botStopped = false; save(); return msg.channel.send("🔓 **bot unlocked.** peasants can use it now"); }
@@ -499,7 +689,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "debug") {
       const gid = msg.guild?.id, cm = gid && D.guildMembers[gid] ? Object.keys(D.guildMembers[gid]).length : 0;
-      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`].join("\n"));
+      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `admin users: **${D.adminUsers?.length || 0}** ${D.adminUsers?.length ? `(${D.adminUsers.join(", ")})` : ""}`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`].join("\n"));
     }
 
     if (cmd === "download") {
@@ -597,6 +787,8 @@ bot.on("messageCreate", async msg => {
       if (!D.roles.length) lines.push("none"); else for (const id of D.roles) lines.push(`• <@&${id}> (\`${id}\`)`);
       lines.push("", "**allowed users (unlimited xlsqr + nav):**");
       if (!D.users.length) lines.push("none"); else for (const id of D.users) lines.push(`• <@${id}> (\`${id}\`)`);
+      lines.push("", "**admins:**");
+      if (!D.adminUsers?.length) lines.push("none"); else for (const id of D.adminUsers) lines.push(`• <@${id}> (\`${id}\`)`);
       lines.push("", `**bot status:** ${D.botStopped ? "🔒 locked" : "🔓 unlocked"}`, `**total credits:** ${Object.values(D.credits).reduce((a, b) => a + b, 0)}`, "", "⚠️ only owners can use admin commands");
       return msg.channel.send(lines.join("\n"));
     }
@@ -629,72 +821,4 @@ bot.on("messageCreate", async msg => {
           const done = Math.min(i + BATCH, total);
           await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 ${Math.round(done / total * 100)}% (${done}/${total})\n✅ sent: **${sent}** | ❌ failed: **${failed}**`).catch(() => {});
         }
-        await sleep(500);
-      }
-      return status.edit(`✅ **LEAK COMPLETE**\n📁 sent: **${sent}/${total}**\n❌ failed: **${failed}**${args[0] ? `\n📍 channel: <#${args[0]}>` : ""}`);
-    }
-
-    if (cmd === "extract") {
-      if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a `!xlsqr` result or a .zip file");
-      const search = searches.get(msg.reference.messageId);
-      if (search) {
-        await msg.channel.send(`📦 extracting **${search.m.length}** files...`);
-        let sent = 0;
-        for (let i = 0; i < search.m.length; i += 10) { const batch = search.m.slice(i, i + 10), files = []; for (const f of batch) { const d = await smartDl(f); if (d) { files.push({ attachment: d, name: f.name }); sent++; } } if (files.length) await msg.channel.send({ files }); if (i + 10 < search.m.length) await sleep(1500); }
-        return msg.channel.send(`✅ sent **${sent}** files`);
-      }
-      const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
-      if (!ref) return msg.channel.send("❌ message not found");
-      let zipUrl = null; for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; }
-      if (!zipUrl) return msg.channel.send("❌ reply to a search result or .zip file");
-      const zd = await dl(zipUrl); if (!zd) return msg.channel.send("❌ download failed");
-      const extracted = []; for (const e of new AdmZip(zd).getEntries()) if (!e.isDirectory) extracted.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
-      if (!extracted.length) return msg.channel.send("❌ empty zip");
-      await msg.channel.send(`📦 extracting **${extracted.length}** files from zip...`);
-      for (let i = 0; i < extracted.length; i += 10) { await msg.channel.send({ files: extracted.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) }); if (i + 10 < extracted.length) await sleep(1000); }
-      return msg.channel.send(`✅ **${extracted.length}** files extracted`);
-    }
-
-  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ error: ${err?.message || "something broke"}`); } catch {} }
-});
-
-let archBusy = false;
-async function doArchive(msg, chId) {
-  if (archBusy) return msg.channel.send("⏳ already archiving, wait");
-  if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
-  archBusy = true;
-  try {
-    await msg.channel.send("⏳ archiving...");
-    const all = await scanChannel(chId); if (!all.length) return msg.channel.send("❌ no .txt files");
-    const zip = new AdmZip(); let ok = 0;
-    for (let i = 0; i < all.length; i += 10) { const batch = all.slice(i, i + 10); const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) }))); for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; } }
-    if (!ok) return msg.channel.send("❌ all downloads failed");
-    const buf = zip.toBuffer();
-    const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok });
-    if (up?.url) return msg.channel.send(`✅ ${up.url}`);
-    let sent = false;
-    try { await (await bot.users.fetch(TARGET_USER_ID)).send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } catch {}
-    if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } } catch {}
-    if (!sent) await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
-    return msg.channel.send(`✅ archived **${ok}** files`);
-  } catch (err) { try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
-  finally { archBusy = false; }
-}
-
-process.on("unhandledRejection", e => console.error("[ERR]", e));
-process.on("uncaughtException", e => console.error("[ERR]", e));
-process.on("SIGINT", () => { try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} process.exit(); });
-process.on("SIGTERM", () => { try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} process.exit(); });
-bot.on("guildMemberAdd", m => rememberGuildMember(m.guild.id, m.user));
-bot.on("guildMemberRemove", m => forgetGuildMember(m.guild.id, m.id));
-
-if (BOT_TOKEN) {
-  bot.once("ready", async () => {
-    console.log(`[BOT] ${bot.user?.tag} online 😤`);
-    console.log(`[BOT] servers: ${bot.guilds.cache.size} | AI: Groq⚡+OpenRouter`);
-    console.log(`[BOT] saved: ${D.users.length} users, ${D.roles.length} roles, ${Object.keys(D.credits).length} credit entries`);
-    console.log(`[BOT] nuke owners: ${NUKE_OWNER_IDS.join(", ")}`);
-    for (const g of bot.guilds.cache.values()) syncGuildMembers(g).catch(() => {});
-  });
-  bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
-}
+        await sleep(500
