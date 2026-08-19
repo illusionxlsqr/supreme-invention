@@ -12,7 +12,7 @@ const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674"
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "872426417063882803";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
 const OWNER_IDS = (process.env.OWNER_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
-const NUKE_OWNER_IDS = (process.env.NUKE_OWNER_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
+const NUKE_OWNER_IDS = (process.env.NUKE_OWNER_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const VIP_IDS = (process.env.VIP_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_UPLOAD_URL = process.env.ARCHIVE_UPLOAD_URL || "";
