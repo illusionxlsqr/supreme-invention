@@ -1,3 +1,17 @@
+// FIX: ReadableStream for Node.js < 18
+if (typeof ReadableStream === 'undefined') {
+  try {
+    global.ReadableStream = require('stream/web').ReadableStream;
+  } catch (e) {
+    try {
+      const { Readable } = require('stream');
+      global.ReadableStream = Readable;
+    } catch (e2) {
+      console.warn('Could not polyfill ReadableStream');
+    }
+  }
+}
+
 const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
 const AdmZip = require("adm-zip");
 const axios = require("axios");
