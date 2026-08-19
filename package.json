@@ -6,12 +6,13 @@
   "scripts": {
     "start": "node bot.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "discord.js": "^14.14.1",
     "adm-zip": "^0.5.10",
-    "axios": "^1.6.2"
-  },
-  "engines": {
-    "node": ">=16.9.0"
+    "axios": "^1.6.2",
+    "undici": "^5.28.4"
   }
 }
