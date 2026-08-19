@@ -1,106 +1,6 @@
-// Add these new variables at the top with the other D object properties
-// Find this line: let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false };
-// Replace with:
-let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, adminUsers: [], guessNumber: null, guessChannel: null, guessWinner: null };
-
-// Then add these command handlers in the command section (before the owner-only section):
-
-    // ============ GIVE ADMIN COMMAND ============
-    if (cmd === "giveadmin") {
-      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can give admin perms");
-      const input = args.join(" ").trim();
-      if (!input) return msg.channel.send("❌ `!giveadmin @user`");
-      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-      if (!um) return msg.channel.send("❌ invalid user");
-      if (!D.adminUsers) D.adminUsers = [];
-      if (!D.adminUsers.includes(um[1])) {
-        D.adminUsers.push(um[1]);
-        save();
-      }
-      return msg.channel.send(`✅ <@${um[1]}> is now an admin! (all commands except nuke)`);
-    }
-
-    // ============ REMOVE ADMIN COMMAND ============
-    if (cmd === "removeadmin") {
-      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can remove admin perms");
-      const input = args.join(" ").trim();
-      if (!input) return msg.channel.send("❌ `!removeadmin @user` or `!removeadmin all`");
-      if (input.toLowerCase() === "all") {
-        D.adminUsers = [];
-        save();
-        return msg.channel.send("✅ all admins removed");
-      }
-      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-      if (!um) return msg.channel.send("❌ invalid user");
-      D.adminUsers = D.adminUsers.filter(id => id !== um[1]);
-      save();
-      return msg.channel.send(`✅ <@${um[1]}> is no longer an admin`);
-    }
-
-    // ============ GUESS NUMBER COMMAND ============
-    if (cmd === "guessnumber") {
-      if (!isOwner(msg.author) && !D.adminUsers?.includes(msg.author.id)) {
-        return msg.channel.send("❌ only owner or admins can start guessnumber");
-      }
-      
-      const number = Math.floor(Math.random() * 100) + 1;
-      D.guessNumber = number;
-      D.guessChannel = msg.channel.id;
-      D.guessWinner = null;
-      save();
-      
-      // Send DM to the user who started it
-      try {
-        await msg.author.send(`🔢 **GUESS NUMBER STARTED**\n📝 The number has been chosen!\n🎯 Guess between 1-100\n💀 Good luck!`);
-      } catch {
-        await msg.channel.send("❌ I can't DM you, enable DMs from server members!");
-      }
-      
-      await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-100 has been chosen!\n📨 Check your DMs for a hint!\n💀 Type your guess in this channel!`);
-      return;
-    }
-
-    // ============ GUESS CHECK (inside the main message handler) ============
-    // Add this after the reg(msg.author) line and before the command parsing
-    // This checks if a user is guessing a number
-    
-    // Check for guess number (non-command messages)
-    if (D.guessNumber !== null && D.guessChannel === msg.channel.id && !c.startsWith("!")) {
-      const guess = parseInt(c);
-      if (!isNaN(guess) && guess >= 1 && guess <= 100) {
-        if (guess === D.guessNumber) {
-          // WINNER!
-          D.guessWinner = msg.author.id;
-          const winner = msg.author;
-          await msg.channel.send(`🔒 **LOCK!**\n🎉 <@${winner.id}> **WON!**\n✅ The number was **${D.guessNumber}**`);
-          // Send DM to the game starter
-          try {
-            const starter = await bot.users.fetch(msg.author.id);
-            await starter.send(`🎉 **GAME OVER!**\n<@${winner.id}> won with the number ${D.guessNumber}!`);
-          } catch {}
-          D.guessNumber = null;
-          D.guessChannel = null;
-          D.guessWinner = null;
-          save();
-          return;
-        } else if (guess < D.guessNumber) {
-          await msg.channel.send(`⬆️ **${guess}** is too LOW! Try again!`);
-        } else {
-          await msg.channel.send(`⬇️ **${guess}** is too HIGH! Try again!`);
-        }
-        return;
-      }
-    }
-
-    // Then modify the isOwner check to also check for admin users
-    // Find this line: if (!isOwner(msg.author)) return;
-    // Replace with:
-    const isAdmin = D.adminUsers?.includes(msg.author.id) || false;
-    if (!isOwner(msg.author) && !isAdmin) return;
-
-// ==============================================
-// COMPLETE bot.js with all changes:
-// ==============================================
+// The error is because there's an await outside an async function
+// The code with the guessnumber command needs to be inside the messageCreate handler
+// Here's the complete fixed bot.js:
 
 // FIX: ReadableStream for Node.js < 18
 if (typeof ReadableStream === 'undefined') {
@@ -508,8 +408,8 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
-      if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game", "`!giveadmin @user` — give admin perms (owner only)", "`!removeadmin @user` — remove admin perms (owner only)");
-      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
+      if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game");
+      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
       if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
