@@ -1,7 +1,3 @@
-// The error is because there's an await outside an async function
-// The code with the guessnumber command needs to be inside the messageCreate handler
-// Here's the complete fixed bot.js:
-
 // FIX: ReadableStream for Node.js < 18
 if (typeof ReadableStream === 'undefined') {
   try {
@@ -373,7 +369,7 @@ bot.on("messageCreate", async msg => {
     // Check for guess number (non-command messages)
     if (D.guessNumber !== null && D.guessChannel === msg.channel.id) {
       const guess = parseInt(c);
-      if (!isNaN(guess) && guess >= 1 && guess <= 100) {
+      if (!isNaN(guess) && guess >= 1 && guess <= 1000) {
         if (guess === D.guessNumber) {
           D.guessWinner = msg.author.id;
           const winner = msg.author;
@@ -408,7 +404,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
-      if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game");
+      if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game (you choose the number via DM)");
       if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
       if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
@@ -502,19 +498,31 @@ bot.on("messageCreate", async msg => {
         return msg.channel.send("❌ only owner or admins can start guessnumber");
       }
       
-      const number = Math.floor(Math.random() * 100) + 1;
-      D.guessNumber = number;
-      D.guessChannel = msg.channel.id;
-      D.guessWinner = null;
-      save();
-      
       try {
-        await msg.author.send(`🔢 **GUESS NUMBER STARTED**\n📝 The number has been chosen!\n🎯 Guess between 1-100\n💀 Good luck!`);
-      } catch {
-        await msg.channel.send("❌ I can't DM you, enable DMs from server members!");
+        await msg.author.send(`🔢 **GUESS NUMBER SETUP**\n📝 Please reply to this DM with the number you want people to guess (1-1000)\n⏳ You have 60 seconds to respond`);
+        
+        const filter = m => m.author.id === msg.author.id && !m.content.startsWith("!");
+        const collected = await msg.author.dmChannel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
+        const response = collected.first();
+        const number = parseInt(response.content);
+        
+        if (isNaN(number) || number < 1 || number > 1000) {
+          await msg.author.send("❌ Invalid number! Must be between 1-1000. Game cancelled.");
+          return msg.channel.send("❌ Game cancelled - invalid number provided");
+        }
+        
+        D.guessNumber = number;
+        D.guessChannel = msg.channel.id;
+        D.guessWinner = null;
+        save();
+        
+        await msg.author.send(`✅ Number **${number}** has been set!\n🎯 People will now guess in the channel`);
+        await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-1000 has been chosen!\n📝 Type your guess in this channel!\n💀 Good luck!`);
+        
+      } catch (err) {
+        await msg.author.send("⏰ Time expired! Game cancelled.");
+        await msg.channel.send("❌ Game cancelled - no response received");
       }
-      
-      await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-100 has been chosen!\n📨 Check your DMs for a hint!\n💀 Type your guess in this channel!`);
       return;
     }
 
