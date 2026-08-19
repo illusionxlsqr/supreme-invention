@@ -1,7 +1,7 @@
 {
-  "name": "discord-bot",
+  "name": "xlsqr-bot",
   "version": "1.0.0",
-  "private": true,
+  "description": "XLSQR Discord Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -12,6 +12,6 @@
     "axios": "^1.6.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.9.0"
   }
 }
