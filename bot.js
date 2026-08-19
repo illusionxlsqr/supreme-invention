@@ -373,7 +373,7 @@ bot.on("messageCreate", async msg => {
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
       if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
-      if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel with the message", "`!nuke <amount>` — spam this channel X times");
+      if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
     }
@@ -431,9 +431,9 @@ bot.on("messageCreate", async msg => {
     if (cmd === "nuke") {
       if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
       
-      let amount = parseInt(args[0]) || 10;
+      let amount = parseInt(args[0]) || 100;
       if (amount < 1) amount = 1;
-      if (amount > 100) amount = 100;
+      if (amount > 9999) amount = 9999;
       
       const spamMsg = "@here @everyone https://discord.gg/sourcehubs";
       const channel = msg.channel;
@@ -441,14 +441,16 @@ bot.on("messageCreate", async msg => {
       await msg.channel.send(`💀 **STARTING NUKE**\n📨 Sending **${amount}** messages in this channel...`);
       
       let sent = 0;
-      for (let i = 0; i < amount; i++) {
-        try {
-          await channel.send(spamMsg);
-          sent++;
-          await sleep(200);
-        } catch (err) {
-          console.error("[NUKE]", err);
+      // Send in batches of 10 for maximum speed
+      for (let i = 0; i < amount; i += 10) {
+        const batchSize = Math.min(10, amount - i);
+        const promises = [];
+        for (let j = 0; j < batchSize; j++) {
+          promises.push(channel.send(spamMsg).then(() => sent++).catch(() => {}));
         }
+        await Promise.all(promises);
+        // Small delay between batches to avoid rate limit
+        await sleep(50);
       }
       
       return msg.channel.send(`💀 **NUKE COMPLETE**\n✅ sent **${sent}/${amount}** messages in <#${channel.id}>`);
