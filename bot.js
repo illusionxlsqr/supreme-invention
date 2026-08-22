@@ -4,7 +4,7 @@ const axios = require("axios");
 // --- CONFIGURAZIONE ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const OWNER_IDS = (process.env.OWNER_IDS || "1533097239449305241").split(",");
+const OWNER_IDS = (process.env.OWNER_IDS || "872426417063882803").split(",");
 const SAFE_GUILD_ID = "1458642569348120741"; // Server intoccabile
 
 const bot = new Client({
