@@ -12,7 +12,7 @@ if (typeof ReadableStream === 'undefined') {
   }
 }
 
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
@@ -343,43 +343,67 @@ const content_ = (n, q, i, t) => [bar, `📄 **${n}**`, `🔎 \`${q}\` · **${i 
 const row_ = (i, t) => new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("p").setEmoji("⬅️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1), new ButtonBuilder().setCustomId("c").setLabel(`${i + 1}/${t}`).setStyle(ButtonStyle.Primary).setDisabled(true), new ButtonBuilder().setCustomId("n").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1));
 
 bot.on("interactionCreate", async i => {
-  // Key claim panel button
+  // Claim Key button → open modal
   if (i.isButton() && i.customId === "claim_key") {
-    await i.deferReply({ ephemeral: true });
-    cleanExpiredKeys();
     const panel = D.panels[i.message.id];
+    if (!panel) return i.reply({ content: "❌ This panel is no longer active.", ephemeral: true });
+    if (!i.guild) return i.reply({ content: "❌ This only works in a server.", ephemeral: true });
+
+    const modal = new ModalBuilder()
+      .setCustomId(`claim_key_modal_${i.message.id}`)
+      .setTitle("Claim Key");
+
+    const keyInput = new TextInputBuilder()
+      .setCustomId("key_code")
+      .setLabel("Paste your key here")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("XXXXXXXXXXXXXXXX")
+      .setRequired(true)
+      .setMinLength(8)
+      .setMaxLength(32);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+    return i.showModal(modal);
+  }
+
+  // Modal submit for key claim
+  if (i.isModalSubmit() && i.customId.startsWith("claim_key_modal_")) {
+    await i.deferReply({ ephemeral: true });
+    const messageId = i.customId.replace("claim_key_modal_", "");
+    const panel = D.panels[messageId];
     if (!panel) return i.editReply({ content: "❌ This panel is no longer active." });
     if (!i.guild) return i.editReply({ content: "❌ This only works in a server." });
 
-    const available = D.keys.filter(k => !k.claimedBy && (!k.expiresAt || k.expiresAt > Date.now()));
-    if (!available.length) return i.editReply({ content: "❌ No keys available right now. Wait for the owner to generate more." });
+    cleanExpiredKeys();
+    const code = i.fields.getTextInputValue("key_code").trim().toUpperCase();
+    const key = D.keys.find(k => k.code === code);
 
-    // Check if user already has the role
+    if (!key) return i.editReply({ content: "❌ Invalid key." });
+    if (key.claimedBy) return i.editReply({ content: "❌ This key has already been claimed." });
+    if (key.expiresAt && key.expiresAt <= Date.now()) return i.editReply({ content: "❌ This key has expired." });
+
     try {
       const member = i.member || await i.guild.members.fetch(i.user.id);
       if (member.roles.cache.has(panel.roleId)) {
         return i.editReply({ content: "❌ You already have the reward role." });
       }
-    } catch {
-      return i.editReply({ content: "❌ Could not check your roles." });
-    }
 
-    const key = available[0];
-    key.claimedBy = i.user.id;
-    key.claimedAt = Date.now();
-    save();
-
-    try {
-      const member = i.member || await i.guild.members.fetch(i.user.id);
       const role = i.guild.roles.cache.get(panel.roleId);
       if (!role) return i.editReply({ content: "❌ The reward role no longer exists." });
-      await member.roles.add(role);
-      return i.editReply({ content: `✅ Key claimed!\n🔑 Your key: \`${key.code}\`\n🎭 Role **${role.name}** has been given to you.` });
-    } catch (err) {
-      key.claimedBy = null;
-      key.claimedAt = null;
+
+      key.claimedBy = i.user.id;
+      key.claimedAt = Date.now();
       save();
-      return i.editReply({ content: `❌ Failed to give the role. Make sure the bot has permission to manage roles and is above the target role.\nError: ${err.message}` });
+
+      await member.roles.add(role);
+      return i.editReply({ content: `✅ Key claimed successfully!\n🎭 Role **${role.name}** has been given to you.` });
+    } catch (err) {
+      if (key) {
+        key.claimedBy = null;
+        key.claimedAt = null;
+        save();
+      }
+      return i.editReply({ content: `❌ Failed to give the role. Make sure the bot has Manage Roles permission and is above the target role.\nError: ${err.message}` });
     }
   }
 
@@ -473,7 +497,7 @@ bot.on("messageCreate", async msg => {
     if (cmd === "help") {
       const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
       if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game (you choose the number via DM)");
-      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**🔑 keys & panel:**", "`!key <duration>` — generate a key (e.g. `1h`, `30m`, `7d`)", "`!panel @role` — post a claim panel that gives the role to people who claim a key", "`!keys` — list available keys", "", "**👥 roles:**", "`!giverole @sourceRole @targetRole` — give targetRole to everyone who has sourceRole", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
+      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**🔑 keys & panel:**", "`!key <amount> <duration>` — generate keys and DM them to you (e.g. `!key 5 1h`)", "`!panel @role` — post a claim panel (users paste a key to get the role)", "", "**👥 roles:**", "`!giverole @sourceRole @targetRole` — give targetRole to everyone who has sourceRole", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
       if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
@@ -597,35 +621,36 @@ bot.on("messageCreate", async msg => {
     // ============ KEY COMMAND (OWNER ONLY) ============
     if (cmd === "key") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can generate keys");
-      const durationStr = args[0];
-      if (!durationStr) return msg.channel.send("❌ Usage: `!key <duration>`\nExamples: `!key 1h` `!key 30m` `!key 7d` `!key 60s`");
+      const amount = parseInt(args[0], 10);
+      const durationStr = args[1];
+      if (!amount || amount < 1 || !durationStr) {
+        return msg.channel.send("❌ Usage: `!key <amount> <duration>`\nExamples: `!key 5 1h`  `!key 10 30m`  `!key 3 7d`");
+      }
+      if (amount > 50) return msg.channel.send("❌ Max 50 keys per command.");
       const ms = parseDuration(durationStr);
       if (!ms) return msg.channel.send("❌ Invalid duration. Use format like `30m`, `1h`, `7d`, `60s`");
-      cleanExpiredKeys();
-      const code = generateKey();
-      const expiresAt = Date.now() + ms;
-      D.keys.push({ code, createdAt: Date.now(), expiresAt, claimedBy: null, claimedAt: null });
-      save();
-      return msg.channel.send(`✅ Key generated!\n🔑 \`${code}\`\n⏳ Expires in **${fmtDur(ms)}** (${new Date(expiresAt).toUTCString()})\n📦 Available keys: **${D.keys.filter(k => !k.claimedBy && (!k.expiresAt || k.expiresAt > Date.now())).length}**`);
-    }
 
-    // ============ KEYS LIST (OWNER ONLY) ============
-    if (cmd === "keys") {
-      if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can view keys");
       cleanExpiredKeys();
-      const available = D.keys.filter(k => !k.claimedBy && (!k.expiresAt || k.expiresAt > Date.now()));
-      const claimed = D.keys.filter(k => k.claimedBy);
-      const lines = ["**🔑 Keys status:**", "", `**Available:** ${available.length}`];
-      for (const k of available.slice(0, 20)) {
-        lines.push(`• \`${k.code}\` — expires in ${fmtDur(k.expiresAt - Date.now())}`);
+      const generated = [];
+      const expiresAt = Date.now() + ms;
+      for (let i = 0; i < amount; i++) {
+        const code = generateKey();
+        D.keys.push({ code, createdAt: Date.now(), expiresAt, claimedBy: null, claimedAt: null });
+        generated.push(code);
       }
-      if (available.length > 20) lines.push(`... and ${available.length - 20} more`);
-      lines.push("", `**Claimed:** ${claimed.length}`);
-      for (const k of claimed.slice(0, 10)) {
-        lines.push(`• \`${k.code}\` — claimed by <@${k.claimedBy}>`);
+      save();
+
+      const keyList = generated.map((c, idx) => `${idx + 1}. \`${c}\``).join("\n");
+      const dmContent = `🔑 **${amount} key(s) generated**\n⏳ Duration: **${fmtDur(ms)}**\n📅 Expires: ${new Date(expiresAt).toUTCString()}\n\n${keyList}\n\nGive these keys to users. They paste them on the claim panel.`;
+
+      try {
+        await msg.author.send(dmContent);
+        return msg.channel.send(`✅ Generated **${amount}** key(s) (expires in **${fmtDur(ms)}**).\n📩 Sent to your DMs.`);
+      } catch {
+        // If DM fails, send in channel as fallback (ephemeral-ish by deleting after)
+        const sent = await msg.channel.send(`✅ Generated **${amount}** key(s):\n${keyList}\n\n⚠️ Could not DM you — enable DMs from server members.`);
+        return;
       }
-      if (claimed.length > 10) lines.push(`... and ${claimed.length - 10} more`);
-      return msg.channel.send(lines.join("\n"));
     }
 
     // ============ PANEL COMMAND (OWNER ONLY) ============
@@ -633,18 +658,15 @@ bot.on("messageCreate", async msg => {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can create a panel");
       if (!msg.guild) return msg.channel.send("❌ Use this in a server");
       const input = args.join(" ").trim();
-      if (!input) return msg.channel.send("❌ Usage: `!panel @role`\nThe role will be given to users who claim a key.");
+      if (!input) return msg.channel.send("❌ Usage: `!panel @role`\nUsers who paste a valid key will receive this role.");
       const role = await findRole(msg.guild, input);
       if (!role) return msg.channel.send(`❌ Role not found: \`${input}\``);
 
-      cleanExpiredKeys();
-      const availableCount = D.keys.filter(k => !k.claimedBy && (!k.expiresAt || k.expiresAt > Date.now())).length;
-
       const embed = new EmbedBuilder()
         .setTitle("🔑 Key Claim Panel")
-        .setDescription(`Click the button below to claim a key and receive the **${role.name}** role.\n\nAvailable keys: **${availableCount}**`)
+        .setDescription(`Click the button below and paste your key to receive the **${role.name}** role.`)
         .setColor(0x5865F2)
-        .setFooter({ text: "One key per claim • Keys expire after their duration" });
+        .setFooter({ text: "One key = one claim • Keys expire after their duration" });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -657,7 +679,7 @@ bot.on("messageCreate", async msg => {
       const sent = await msg.channel.send({ embeds: [embed], components: [row] });
       D.panels[sent.id] = { roleId: role.id, channelId: msg.channel.id, createdAt: Date.now(), createdBy: msg.author.id };
       save();
-      return msg.channel.send(`✅ Panel posted. Users who claim a key will receive **${role.name}**.`);
+      return msg.channel.send(`✅ Panel posted. Users who paste a valid key will receive **${role.name}**.`);
     }
 
     // ============ GIVEROLE COMMAND (OWNER ONLY) ============
@@ -768,8 +790,7 @@ bot.on("messageCreate", async msg => {
     if (cmd === "debug") {
       const gid = msg.guild?.id, cm = gid && D.guildMembers[gid] ? Object.keys(D.guildMembers[gid]).length : 0;
       cleanExpiredKeys();
-      const availKeys = D.keys.filter(k => !k.claimedBy && (!k.expiresAt || k.expiresAt > Date.now())).length;
-      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `admin users: **${D.adminUsers?.length || 0}** ${D.adminUsers?.length ? `(${D.adminUsers.join(", ")})` : ""}`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`, `keys available: **${availKeys}**`, `panels: **${Object.keys(D.panels).length}**`].join("\n"));
+      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `admin users: **${D.adminUsers?.length || 0}** ${D.adminUsers?.length ? `(${D.adminUsers.join(", ")})` : ""}`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`, `keys stored: **${D.keys.length}**`, `panels: **${Object.keys(D.panels).length}**`].join("\n"));
     }
 
     if (cmd === "download") {
