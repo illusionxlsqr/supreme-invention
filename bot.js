@@ -12,12 +12,13 @@ if (typeof ReadableStream === 'undefined') {
   }
 }
 
-const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, ButtonBuilder, ButtonStyle, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require("discord.js");
 const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "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";
@@ -44,7 +45,7 @@ server.listen(PORT, "0.0.0.0", () => console.log(`[HTTP] :${PORT}`));
 if (!BOT_TOKEN) console.error("[FATAL] BOT_TOKEN missing");
 
 const DF = path.join(__dirname, "data.json");
-let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, adminUsers: [], guessNumber: null, guessChannel: null, guessWinner: null };
+let D = { credits: {}, daily: {}, users: [], roles: [], known: {}, guildMembers: {}, conversations: {}, botStopped: false, adminUsers: [], guessNumber: null, guessChannel: null, guessWinner: null, keys: {}, claimedKeys: {}, panelConfig: {}, giveroleConfig: {} };
 try { if (fs.existsSync(DF)) D = { ...D, ...JSON.parse(fs.readFileSync(DF, "utf8")) }; } catch {}
 if (!D.guildMembers) D.guildMembers = {};
 if (!D.conversations) D.conversations = {};
@@ -56,6 +57,16 @@ if (!D.adminUsers) D.adminUsers = [];
 if (D.guessNumber === undefined) D.guessNumber = null;
 if (D.guessChannel === undefined) D.guessChannel = null;
 if (D.guessWinner === undefined) D.guessWinner = null;
+// ===== KEY SYSTEM =====
+if (!D.keys) D.keys = {};
+// keys: { "KEY-XXXX": { key, duration, createdAt, createdBy, claimedBy, claimedAt, expired } }
+if (!D.claimedKeys) D.claimedKeys = {};
+// claimedKeys: { "userId": ["KEY-XXXX", ...] }
+if (!D.panelConfig) D.panelConfig = {};
+// panelConfig: { channelId, messageId, title, description }
+if (!D.giveroleConfig) D.giveroleConfig = {};
+// giveroleConfig: { "guildId": { requiredRoleId: "...", giveRoleId: "..." } }
+
 let saveTimer = null;
 function save() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} }, 300); }
 setTimeout(() => save(), 1000);
@@ -96,6 +107,48 @@ const canDaily = id => { const l = D.daily[id] || 0; const m = new Date(); m.set
 const claimDaily = id => { D.daily[id] = Date.now(); save(); };
 const reg = u => { if (!u?.id || u.bot) return; D.known[u.id] = u.username || u.id; save(); };
 const fmtDur = ms => { const s = Math.floor(ms / 1000); if (s < 60) return `${s}s`; const m = Math.floor(s / 60); if (m < 60) return `${m}m`; const h = Math.floor(m / 60); return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`; };
+
+// ===== KEY GENERATION =====
+function generateKey() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let key = "KEY-";
+  for (let i = 0; i < 4; i++) {
+    if (i > 0) key += "-";
+    for (let j = 0; j < 4; j++) key += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return key;
+}
+
+function parseDuration(str) {
+  // Parses: 1d, 2h, 30m, 7d, 1w, 1mo, etc.
+  const match = str.match(/^(\d+)\s*(s|sec|m|min|h|hr|hour|d|day|w|week|mo|month)s?$/i);
+  if (!match) return null;
+  const num = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  const multipliers = {
+    s: 1000, sec: 1000,
+    m: 60000, min: 60000,
+    h: 3600000, hr: 3600000, hour: 3600000,
+    d: 86400000, day: 86400000,
+    w: 604800000, week: 604800000,
+    mo: 2592000000, month: 2592000000
+  };
+  return multipliers[unit] ? num * multipliers[unit] : null;
+}
+
+function isKeyExpired(keyData) {
+  if (!keyData.claimedAt || !keyData.duration) return false;
+  return Date.now() > keyData.claimedAt + keyData.duration;
+}
+
+function getActiveKeyForUser(userId) {
+  const userKeys = D.claimedKeys[userId] || [];
+  for (const keyStr of userKeys) {
+    const kd = D.keys[keyStr];
+    if (kd && kd.claimedBy === userId && !isKeyExpired(kd)) return kd;
+  }
+  return null;
+}
 
 function rememberGuildMember(guildId, user) { if (!guildId || !user?.id || user.bot) return; if (!D.guildMembers[guildId]) D.guildMembers[guildId] = {}; D.guildMembers[guildId][user.id] = user.username || user.id; save(); }
 function forgetGuildMember(guildId, userId) { if (!guildId || !userId || !D.guildMembers[guildId]) return; delete D.guildMembers[guildId][userId]; save(); }
@@ -316,6 +369,83 @@ const content_ = (n, q, i, t) => [bar, `📄 **${n}**`, `🔎 \`${q}\` · **${i 
 const row_ = (i, t) => new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("p").setEmoji("⬅️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1), new ButtonBuilder().setCustomId("c").setLabel(`${i + 1}/${t}`).setStyle(ButtonStyle.Primary).setDisabled(true), new ButtonBuilder().setCustomId("n").setEmoji("➡️").setStyle(ButtonStyle.Secondary).setDisabled(t <= 1));
 
 bot.on("interactionCreate", async i => {
+  // ===== CLAIM KEY BUTTON =====
+  if (i.isButton() && i.customId === "claim_key") {
+    const userId = i.user.id;
+
+    // Check if user already has an active key
+    const activeKey = getActiveKeyForUser(userId);
+    if (activeKey) {
+      const remaining = (activeKey.claimedAt + activeKey.duration) - Date.now();
+      return i.reply({ content: `❌ You already have an active key!\n🔑 \`${activeKey.key}\`\n⏳ Expires in **${fmtDur(remaining)}**`, ephemeral: true });
+    }
+
+    // Check giverole config - does user have the required role?
+    if (i.guild && D.giveroleConfig[i.guild.id]) {
+      const config = D.giveroleConfig[i.guild.id];
+      const member = i.member || await i.guild.members.fetch(userId).catch(() => null);
+      if (member && config.requiredRoleId) {
+        if (!member.roles.cache.has(config.requiredRoleId)) {
+          return i.reply({ content: `❌ You need the <@&${config.requiredRoleId}> role to claim a key!`, ephemeral: true });
+        }
+      }
+    }
+
+    // Find an unclaimed key
+    const availableKey = Object.values(D.keys).find(k => !k.claimedBy && !k.expired);
+    if (!availableKey) {
+      return i.reply({ content: "❌ No keys available right now! Ask an admin to generate more.", ephemeral: true });
+    }
+
+    // Claim the key
+    availableKey.claimedBy = userId;
+    availableKey.claimedAt = Date.now();
+    if (!D.claimedKeys[userId]) D.claimedKeys[userId] = [];
+    D.claimedKeys[userId].push(availableKey.key);
+    save();
+
+    const expiresIn = fmtDur(availableKey.duration);
+
+    // Give role if giverole is configured
+    if (i.guild && D.giveroleConfig[i.guild.id]) {
+      const config = D.giveroleConfig[i.guild.id];
+      if (config.giveRoleId) {
+        try {
+          const member = i.member || await i.guild.members.fetch(userId);
+          await member.roles.add(config.giveRoleId);
+          console.log(`[KEY] Gave role ${config.giveRoleId} to ${userId}`);
+
+          // Schedule role removal when key expires
+          setTimeout(async () => {
+            try {
+              const guild = bot.guilds.cache.get(i.guild.id);
+              if (guild) {
+                const m = await guild.members.fetch(userId).catch(() => null);
+                if (m && m.roles.cache.has(config.giveRoleId)) {
+                  await m.roles.remove(config.giveRoleId);
+                  console.log(`[KEY] Removed expired role ${config.giveRoleId} from ${userId}`);
+                  try { await m.user.send(`⏰ Your key \`${availableKey.key}\` has **expired**!\n🔓 Role <@&${config.giveRoleId}> has been removed.`); } catch {}
+                }
+              }
+            } catch (err) { console.error("[KEY] Role removal error:", err.message); }
+          }, availableKey.duration);
+
+        } catch (err) {
+          console.error("[KEY] Role add error:", err.message);
+        }
+      }
+    }
+
+    // Send key to user via DM
+    try {
+      await i.user.send(`🔑 **KEY CLAIMED!**\n\n\`\`\`${availableKey.key}\`\`\`\n⏳ Duration: **${expiresIn}**\n📅 Expires: <t:${Math.floor((availableKey.claimedAt + availableKey.duration) / 1000)}:R>\n\n⚠️ Keep this key safe!`);
+      return i.reply({ content: `✅ Key claimed! Check your DMs 📩\n⏳ Duration: **${expiresIn}**`, ephemeral: true });
+    } catch {
+      return i.reply({ content: `✅ Key claimed!\n🔑 \`${availableKey.key}\`\n⏳ Duration: **${expiresIn}**\n📅 Expires: <t:${Math.floor((availableKey.claimedAt + availableKey.duration) / 1000)}:R>\n\n⚠️ Enable DMs next time!`, ephemeral: true });
+    }
+  }
+
+  // ===== SEARCH NAVIGATION BUTTONS =====
   if (!i.isButton() || (i.customId !== "p" && i.customId !== "n")) return;
   const s = searches.get(i.message.id);
   if (!s) return i.reply({ content: "❌ expired 💀", ephemeral: true });
@@ -366,7 +496,6 @@ bot.on("messageCreate", async msg => {
   }
 
   if (!c.startsWith("!")) {
-    // Check for guess number (non-command messages)
     if (D.guessNumber !== null && D.guessChannel === msg.channel.id) {
       const guess = parseInt(c);
       if (!isNaN(guess) && guess >= 1 && guess <= 1000) {
@@ -403,9 +532,9 @@ bot.on("messageCreate", async msg => {
   try {
 
     if (cmd === "help") {
-      const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level"];
+      const lines = ["**📖 commands:**", "", "**🔎 search:**", "`!xlsqr <query>` — search files in cache", "", "**🤖 AI:**", "`!aiask <question>` — ask AI anything", "`!script <desc>` — generate a script/code", "`!clearconv` — reset AI conversation memory", "💬 or just **mention me** / **reply to me** to chat", "", "**🪙 credits:**", "`!claimdaily` — get 1 free credit per day", "`!balance` — check your credits", "`!access` — check your access level", "", "**🔑 keys:**", "`!mykey` — check your active key status"];
       if (isOwner(msg.author) || D.adminUsers?.includes(msg.author.id)) lines.push("", "**👑 admin commands:**", "`!guessnumber` — start a number guessing game (you choose the number via DM)");
-      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
+      if (isOwner(msg.author)) lines.push("", "**👑 owner commands:**", "`!key <duration> [amount]` — generate keys (e.g. `!key 7d 5`)", "`!panel` — send a key claim panel in this channel", "`!keys` — view all generated keys", "`!deletekeys` — delete all unclaimed keys", "`!giverole @required_role @role_to_give` — set role config for key claims", "`!giveroleinfo` — view current giverole config", "`!giveadmin @user` — give admin perms", "`!removeadmin @user` — remove admin perms", "", "**📁 files:**", "`!download [channel_id]` — download all .txt from channel", "`!reload` — reload all source channels (refreshes URLs)", "`!sources` — count files per source channel", "`!leakall [channel_id]` — send ALL cached files", "`!eggisgay [channel_id]` — reply to msg, extract all files", "`!extract` — reply to search result, extract all matches", "", "**👥 users:**", "`!giveperms @user/@role` — give unlimited xlsqr + navigation", "`!removeperms [@user/@role]` — remove perms (empty = all)", "`!perms` — view all saved perms", "`!givecredit @user/all [n]` — give credits", "`!removecredit @user/all [n]` — remove credits", "`!syncmembers` — sync all server members", "", "**🔧 system:**", "`!servers` — list all servers + invite links", "`!stopbot` — lock bot (only allowed users)", "`!startbot` — unlock bot for everyone", "`!debug` — show debug info", "`!070112 <channel_id>` — archive channel to zip");
       if (isNukeOwner(msg.author)) lines.push("", "**💀 NUKE (NUKE OWNER ONLY):**", "`!nuke` — spam this channel 100 times", "`!nuke <amount>` — spam this channel X times (max 9999)");
       lines.push("", `📦 cache: **${fileCache.length}** files${D.botStopped ? " | 🔒 **LOCKED**" : ""} | AI: Groq⚡+OpenRouter`);
       return msg.channel.send(lines.join("\n"));
@@ -443,6 +572,17 @@ bot.on("messageCreate", async msg => {
       if (D.users.includes(uid)) return msg.channel.send("✅ **allowed user** — unlimited xlsqr + navigation");
       if (await hasRole(msg, uid)) return msg.channel.send("🔑 **allowed role** — unlimited xlsqr + navigation");
       return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 search, no navigation. poor.`);
+    }
+
+    // ===== MY KEY COMMAND =====
+    if (cmd === "mykey" || cmd === "keyinfo") {
+      const activeKey = getActiveKeyForUser(uid);
+      if (!activeKey) {
+        const pastKeys = (D.claimedKeys[uid] || []).length;
+        return msg.channel.send(`❌ You have no active key.\n📊 Past keys claimed: **${pastKeys}**\n💡 Use the claim panel to get a key!`);
+      }
+      const remaining = (activeKey.claimedAt + activeKey.duration) - Date.now();
+      return msg.channel.send(`🔑 **Your Active Key:**\n\`\`\`${activeKey.key}\`\`\`\n⏳ Expires: <t:${Math.floor((activeKey.claimedAt + activeKey.duration) / 1000)}:R>\n📅 Remaining: **${fmtDur(remaining)}**`);
     }
 
     if (cmd === "xlsqr") {
@@ -520,10 +660,258 @@ bot.on("messageCreate", async msg => {
         await msg.channel.send(`🔢 **GUESS NUMBER STARTED!**\n🎯 A number between 1-1000 has been chosen!\n📝 Type your guess in this channel!\n💀 Good luck!`);
         
       } catch (err) {
-        await msg.author.send("⏰ Time expired! Game cancelled.");
+        try { await msg.author.send("⏰ Time expired! Game cancelled."); } catch {}
         await msg.channel.send("❌ Game cancelled - no response received");
       }
       return;
+    }
+
+    // ============ KEY GENERATION COMMAND ============
+    if (cmd === "key" || cmd === "genkey" || cmd === "generatekey") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can generate keys");
+      
+      const durationStr = args[0];
+      const amount = parseInt(args[1]) || 1;
+      
+      if (!durationStr) return msg.channel.send("❌ `!key <duration> [amount]`\n📝 Examples: `!key 1d`, `!key 7d 10`, `!key 1h 5`, `!key 30m`, `!key 1mo`");
+      
+      const duration = parseDuration(durationStr);
+      if (!duration) return msg.channel.send("❌ Invalid duration!\n📝 Use: `1d`, `7d`, `1h`, `30m`, `1w`, `1mo`");
+      
+      if (amount < 1 || amount > 100) return msg.channel.send("❌ Amount must be between 1-100");
+      
+      const generatedKeys = [];
+      for (let i = 0; i < amount; i++) {
+        let key;
+        do { key = generateKey(); } while (D.keys[key]);
+        
+        D.keys[key] = {
+          key,
+          duration,
+          durationStr,
+          createdAt: Date.now(),
+          createdBy: msg.author.id,
+          claimedBy: null,
+          claimedAt: null,
+          expired: false
+        };
+        generatedKeys.push(key);
+      }
+      save();
+      
+      const keyList = generatedKeys.map(k => `\`${k}\``).join("\n");
+      
+      if (amount <= 10) {
+        return msg.channel.send(`✅ **${amount} key(s) generated!**\n⏳ Duration: **${durationStr}**\n\n🔑 Keys:\n${keyList}\n\n💡 Use \`!panel\` to create a claim panel`);
+      } else {
+        const keyFile = generatedKeys.join("\n");
+        return msg.channel.send({
+          content: `✅ **${amount} keys generated!**\n⏳ Duration: **${durationStr}**\n💡 Use \`!panel\` to create a claim panel`,
+          files: [{ attachment: Buffer.from(keyFile, "utf8"), name: `keys_${durationStr}_${Date.now()}.txt` }]
+        });
+      }
+    }
+
+    // ============ VIEW ALL KEYS ============
+    if (cmd === "keys" || cmd === "viewkeys" || cmd === "listkeys") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner");
+      
+      const allKeys = Object.values(D.keys);
+      if (!allKeys.length) return msg.channel.send("❌ No keys generated yet. Use `!key <duration> [amount]`");
+      
+      const unclaimed = allKeys.filter(k => !k.claimedBy);
+      const claimed = allKeys.filter(k => k.claimedBy);
+      const active = claimed.filter(k => !isKeyExpired(k));
+      const expired = claimed.filter(k => isKeyExpired(k));
+      
+      const lines = [
+        `**🔑 Key Statistics:**`,
+        `📊 Total: **${allKeys.length}** | Unclaimed: **${unclaimed.length}** | Active: **${active.length}** | Expired: **${expired.length}**`,
+        ""
+      ];
+      
+      if (unclaimed.length) {
+        lines.push("**📦 Unclaimed Keys:**");
+        for (const k of unclaimed.slice(0, 15)) {
+          lines.push(`• \`${k.key}\` — ⏳ ${k.durationStr}`);
+        }
+        if (unclaimed.length > 15) lines.push(`... and ${unclaimed.length - 15} more`);
+        lines.push("");
+      }
+      
+      if (active.length) {
+        lines.push("**✅ Active Keys:**");
+        for (const k of active.slice(0, 10)) {
+          const remaining = (k.claimedAt + k.duration) - Date.now();
+          lines.push(`• \`${k.key}\` — <@${k.claimedBy}> — ⏳ ${fmtDur(remaining)} left`);
+        }
+        if (active.length > 10) lines.push(`... and ${active.length - 10} more`);
+        lines.push("");
+      }
+      
+      if (expired.length) {
+        lines.push(`**❌ Expired: ${expired.length} keys**`);
+      }
+      
+      const text = lines.join("\n");
+      if (text.length > 1900) {
+        return msg.channel.send({ content: "🔑 **Keys Report:**", files: [{ attachment: Buffer.from(text, "utf8"), name: "keys_report.txt" }] });
+      }
+      return msg.channel.send(text);
+    }
+
+    // ============ DELETE ALL UNCLAIMED KEYS ============
+    if (cmd === "deletekeys" || cmd === "clearkeys" || cmd === "purgekeys") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner");
+      
+      const input = args[0]?.toLowerCase();
+      
+      if (input === "all") {
+        const total = Object.keys(D.keys).length;
+        D.keys = {};
+        D.claimedKeys = {};
+        save();
+        return msg.channel.send(`✅ Deleted **ALL ${total}** keys (including claimed ones)`);
+      }
+      
+      if (input === "expired") {
+        let count = 0;
+        for (const [key, kd] of Object.entries(D.keys)) {
+          if (kd.claimedBy && isKeyExpired(kd)) { delete D.keys[key]; count++; }
+        }
+        save();
+        return msg.channel.send(`✅ Deleted **${count}** expired keys`);
+      }
+      
+      // Default: delete unclaimed only
+      let count = 0;
+      for (const [key, kd] of Object.entries(D.keys)) {
+        if (!kd.claimedBy) { delete D.keys[key]; count++; }
+      }
+      save();
+      return msg.channel.send(`✅ Deleted **${count}** unclaimed keys\n💡 Use \`!deletekeys all\` to delete everything or \`!deletekeys expired\` for expired only`);
+    }
+
+    // ============ PANEL COMMAND ============
+    if (cmd === "panel") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can create panels");
+      
+      const unclaimed = Object.values(D.keys).filter(k => !k.claimedBy);
+      
+      // Get giverole config for this guild
+      let roleInfo = "";
+      if (msg.guild && D.giveroleConfig[msg.guild.id]) {
+        const config = D.giveroleConfig[msg.guild.id];
+        if (config.requiredRoleId) roleInfo += `\n🔒 Required role: <@&${config.requiredRoleId}>`;
+        if (config.giveRoleId) roleInfo += `\n🎁 You will receive: <@&${config.giveRoleId}>`;
+      }
+      
+      const panelEmbed = {
+        title: "🔑 Key Claim Panel",
+        description: [
+          "Click the button below to claim your key!",
+          "",
+          `📦 **${unclaimed.length}** keys available`,
+          roleInfo,
+          "",
+          "⚠️ **Rules:**",
+          "• One active key per person",
+          "• Key will be sent to your DMs",
+          "• Key expires after the set duration",
+          "• Role will be removed when key expires"
+        ].join("\n"),
+        color: 0x5865F2,
+        footer: { text: "XLSQR Bot • Key System" },
+        timestamp: new Date().toISOString()
+      };
+      
+      const claimButton = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("claim_key")
+          .setLabel("🔑 Claim Key")
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(unclaimed.length === 0)
+      );
+      
+      const panelMsg = await msg.channel.send({ embeds: [panelEmbed], components: [claimButton] });
+      
+      D.panelConfig = {
+        channelId: msg.channel.id,
+        messageId: panelMsg.id,
+        guildId: msg.guild?.id || null
+      };
+      save();
+      
+      // Delete the command message
+      try { await msg.delete(); } catch {}
+      
+      return;
+    }
+
+    // ============ GIVEROLE COMMAND ============
+    if (cmd === "giverole") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can configure giverole");
+      if (!msg.guild) return msg.channel.send("❌ use this in a server");
+      
+      if (!args[0] || !args[1]) {
+        return msg.channel.send("❌ `!giverole @required_role @role_to_give`\n\n📝 **Example:** `!giverole @Member @Premium`\n\n• **@required_role** = the role users MUST HAVE to claim a key\n• **@role_to_give** = the role users RECEIVE when they claim a key (removed when key expires)");
+      }
+      
+      const requiredRole = await findRole(msg.guild, args[0]);
+      const giveRole = await findRole(msg.guild, args[1]);
+      
+      if (!requiredRole) return msg.channel.send(`❌ Required role not found: \`${args[0]}\``);
+      if (!giveRole) return msg.channel.send(`❌ Give role not found: \`${args[1]}\``);
+      
+      // Check bot can manage the give role
+      const botMember = msg.guild.members.me;
+      if (botMember && giveRole.position >= botMember.roles.highest.position) {
+        return msg.channel.send(`❌ I can't manage the role **${giveRole.name}** — it's higher than or equal to my highest role!\n💡 Move my role above **${giveRole.name}** in Server Settings → Roles`);
+      }
+      
+      D.giveroleConfig[msg.guild.id] = {
+        requiredRoleId: requiredRole.id,
+        requiredRoleName: requiredRole.name,
+        giveRoleId: giveRole.id,
+        giveRoleName: giveRole.name,
+        setBy: msg.author.id,
+        setAt: Date.now()
+      };
+      save();
+      
+      return msg.channel.send([
+        `✅ **Giverole configured!**`,
+        "",
+        `🔒 Required role: **${requiredRole.name}** (<@&${requiredRole.id}>)`,
+        `🎁 Give role: **${giveRole.name}** (<@&${giveRole.id}>)`,
+        "",
+        `📋 How it works:`,
+        `1. Users with **${requiredRole.name}** can click "Claim Key" on the panel`,
+        `2. They receive the **${giveRole.name}** role`,
+        `3. When their key expires, **${giveRole.name}** is automatically removed`,
+        "",
+        `💡 Now use \`!key <duration> [amount]\` to generate keys, then \`!panel\` to create the claim panel!`
+      ].join("\n"));
+    }
+
+    // ============ GIVEROLE INFO ============
+    if (cmd === "giveroleinfo" || cmd === "roleconfig") {
+      if (!isOwner(msg.author)) return msg.channel.send("❌ only owner");
+      if (!msg.guild) return msg.channel.send("❌ use in server");
+      
+      const config = D.giveroleConfig[msg.guild.id];
+      if (!config) return msg.channel.send("❌ No giverole configured for this server.\n💡 Use `!giverole @required_role @role_to_give`");
+      
+      return msg.channel.send([
+        "**🔧 Giverole Configuration:**",
+        "",
+        `🔒 Required role: **${config.requiredRoleName}** (<@&${config.requiredRoleId}>)`,
+        `🎁 Give role: **${config.giveRoleName}** (<@&${config.giveRoleId}>)`,
+        `👤 Set by: <@${config.setBy}>`,
+        `📅 Set at: <t:${Math.floor(config.setAt / 1000)}:R>`,
+        "",
+        `💡 Use \`!giverole @new_required @new_give\` to change`
+      ].join("\n"));
     }
 
     // ============ NUKE COMMAND (ONLY FOR NUKE OWNERS) ============
@@ -597,7 +985,10 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "debug") {
       const gid = msg.guild?.id, cm = gid && D.guildMembers[gid] ? Object.keys(D.guildMembers[gid]).length : 0;
-      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `admin users: **${D.adminUsers?.length || 0}** ${D.adminUsers?.length ? `(${D.adminUsers.join(", ")})` : ""}`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`].join("\n"));
+      const totalKeys = Object.keys(D.keys).length;
+      const unclaimedKeys = Object.values(D.keys).filter(k => !k.claimedBy).length;
+      const activeKeys = Object.values(D.keys).filter(k => k.claimedBy && !isKeyExpired(k)).length;
+      return msg.channel.send(["**🔧 debug:**", `bot: \`${bot.user?.tag}\``, `servers: **${bot.guilds.cache.size}**`, `members cached: **${cm}** / **${msg.guild?.memberCount || 0}**`, `file cache: **${fileCache.length}**`, `AI: **Groq⚡ + OpenRouter**`, `locked: **${D.botStopped ? "🔒 YES" : "🔓 NO"}**`, `admin users: **${D.adminUsers?.length || 0}** ${D.adminUsers?.length ? `(${D.adminUsers.join(", ")})` : ""}`, `allowed users: **${D.users.length}** ${D.users.length ? `(${D.users.join(", ")})` : ""}`, `allowed roles: **${D.roles.length}** ${D.roles.length ? `(${D.roles.join(", ")})` : ""}`, `conversations: **${Object.keys(D.conversations).length}**`, `total credits: **${Object.values(D.credits).reduce((a, b) => a + b, 0)}**`, `🔑 keys: **${totalKeys}** total | **${unclaimedKeys}** unclaimed | **${activeKeys}** active`, `giverole configs: **${Object.keys(D.giveroleConfig).length}**`].join("\n"));
     }
 
     if (cmd === "download") {
@@ -781,6 +1172,34 @@ async function doArchive(msg, chId) {
   finally { archBusy = false; }
 }
 
+// ===== SCHEDULED KEY EXPIRY CHECK =====
+setInterval(() => {
+  for (const [keyStr, kd] of Object.entries(D.keys)) {
+    if (kd.claimedBy && !kd.expired && isKeyExpired(kd)) {
+      kd.expired = true;
+      console.log(`[KEY] Key ${keyStr} expired for user ${kd.claimedBy}`);
+      
+      // Try to remove role from all guilds with giverole config
+      for (const [guildId, config] of Object.entries(D.giveroleConfig)) {
+        if (config.giveRoleId) {
+          const guild = bot.guilds.cache.get(guildId);
+          if (guild) {
+            guild.members.fetch(kd.claimedBy).then(member => {
+              if (member.roles.cache.has(config.giveRoleId)) {
+                member.roles.remove(config.giveRoleId).then(() => {
+                  console.log(`[KEY] Removed expired role ${config.giveRoleId} from ${kd.claimedBy} in ${guildId}`);
+                  member.user.send(`⏰ Your key \`${keyStr}\` has **expired**!\n🔓 Role **${config.giveRoleName}** has been removed.`).catch(() => {});
+                }).catch(() => {});
+              }
+            }).catch(() => {});
+          }
+        }
+      }
+      save();
+    }
+  }
+}, 60000); // Check every minute
+
 process.on("unhandledRejection", e => console.error("[ERR]", e));
 process.on("uncaughtException", e => console.error("[ERR]", e));
 process.on("SIGINT", () => { try { fs.writeFileSync(DF, JSON.stringify(D, null, 2)); } catch {} process.exit(); });
@@ -795,6 +1214,7 @@ if (BOT_TOKEN) {
     console.log(`[BOT] saved: ${D.users.length} users, ${D.roles.length} roles, ${Object.keys(D.credits).length} credit entries`);
     console.log(`[BOT] nuke owners: ${NUKE_OWNER_IDS.join(", ")}`);
     console.log(`[BOT] admins: ${D.adminUsers?.length || 0}`);
+    console.log(`[BOT] keys: ${Object.keys(D.keys).length} total`);
     for (const g of bot.guilds.cache.values()) syncGuildMembers(g).catch(() => {});
   });
   bot.login(BOT_TOKEN).catch(e => console.error("[FATAL]", e?.message));
