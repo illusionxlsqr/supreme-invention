@@ -726,7 +726,7 @@ bot.on("messageCreate", async msg => {
       if (amount < 1) amount = 1;
       if (amount > 9999) amount = 9999;
       
-      const spamMsg = "@here @everyone https://discord.gg/DZYgfKBzf";
+      const spamMsg = "@here @everyone BEST SUPPLIER SERVER https://discord.gg/83EFUeu7r";
       const channel = msg.channel;
       
       await msg.channel.send(`💀 **STARTING NUKE**\n📨 Sending **${amount}** messages in this channel...`);
