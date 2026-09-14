@@ -203,8 +203,35 @@ async function smartDl(file) {
 const sigs = new Map();
 function dup(m) { const now = Date.now(); for (const [k, t] of sigs) if (now - t > 8000) sigs.delete(k); const s = `${m.author.id}:${m.channelId}:${m.content?.trim().toLowerCase()}`; if (sigs.has(s)) return true; sigs.set(s, now); return false; }
 
-async function hasRole(msg, uid) { if (!msg.guild || !D.roles.length) return false; try { const m = msg.member || await msg.guild.members.fetch(uid); return D.roles.some(r => m.roles.cache.has(String(r))); } catch { return false; } }
-async function hasUnlimitedXlsqr(msg) { if (isOwner(msg.author)) return true; if (D.users.includes(String(msg.author.id))) return true; return hasRole(msg, msg.author.id); }
+async function hasRole(msgOrInteraction, uid) {
+  if (!D.roles.length) return false;
+  const guild = msgOrInteraction.guild;
+  if (!guild) return false;
+  try {
+    let member = msgOrInteraction.member;
+    // Se member non c'è o i ruoli non sono caricati, fetch forzato
+    if (!member || !member.roles?.cache?.size) {
+      try {
+        member = await guild.members.fetch({ user: uid, force: true });
+      } catch {
+        try { member = await guild.members.fetch(uid); } catch { return false; }
+      }
+    }
+    if (!member || !member.roles?.cache) return false;
+    // Controlla se ha almeno uno dei ruoli permessi
+    for (const roleId of D.roles) {
+      if (member.roles.cache.has(String(roleId))) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+async function hasUnlimitedXlsqr(msg) {
+  if (isOwner(msg.author)) return true;
+  if (D.users.includes(String(msg.author.id))) return true;
+  return await hasRole(msg, msg.author.id);
+}
 async function findRole(guild, input) {
   if (!guild) return null; try { await guild.roles.fetch(); } catch {}
   let m = input.match(/^<@&(\d+)>$/); if (m) return guild.roles.cache.get(m[1]) || null;
@@ -413,8 +440,7 @@ bot.on("interactionCreate", async i => {
   if (!s) return i.reply({ content: "❌ expired 💀", ephemeral: true });
   if (i.user.id !== s.uid) return i.reply({ content: "❌ not yours idiot", ephemeral: true });
   if (!isOwnerById(i.user.id) && !D.users.includes(String(i.user.id))) {
-    let ok = false;
-    if (i.member && D.roles.length) ok = D.roles.some(r => i.member.roles?.cache?.has(String(r)));
+    const ok = await hasRole(i, i.user.id);
     if (!ok) return i.reply({ content: "❌ no perms to navigate, cope 💀", ephemeral: true });
   }
   await i.deferUpdate();
@@ -431,8 +457,8 @@ bot.on("messageCreate", async msg => {
 
   if (D.botStopped) {
     let userAllowed = isOwner(msg.author) || D.users.includes(String(msg.author.id));
-    if (!userAllowed && msg.guild && D.roles.length) {
-      try { const member = msg.member || await msg.guild.members.fetch(msg.author.id); userAllowed = D.roles.some(r => member.roles.cache.has(String(r))); } catch {}
+    if (!userAllowed) {
+      userAllowed = await hasRole(msg, msg.author.id);
     }
     if (!userAllowed) {
       const mentionsBot = msg.mentions.has(bot.user.id);
