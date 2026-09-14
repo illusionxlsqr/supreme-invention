@@ -203,13 +203,13 @@ async function smartDl(file) {
 const sigs = new Map();
 function dup(m) { const now = Date.now(); for (const [k, t] of sigs) if (now - t > 8000) sigs.delete(k); const s = `${m.author.id}:${m.channelId}:${m.content?.trim().toLowerCase()}`; if (sigs.has(s)) return true; sigs.set(s, now); return false; }
 
-async function hasRole(msg, uid) { if (!msg.guild || !D.roles.length) return false; try { const m = msg.member || await msg.guild.members.fetch(uid); return D.roles.some(r => m.roles.cache.has(r)); } catch { return false; } }
-async function hasUnlimitedXlsqr(msg) { if (isOwner(msg.author)) return true; if (D.users.includes(msg.author.id)) return true; return hasRole(msg, msg.author.id); }
+async function hasRole(msg, uid) { if (!msg.guild || !D.roles.length) return false; try { const m = msg.member || await msg.guild.members.fetch(uid); return D.roles.some(r => m.roles.cache.has(String(r))); } catch { return false; } }
+async function hasUnlimitedXlsqr(msg) { if (isOwner(msg.author)) return true; if (D.users.includes(String(msg.author.id))) return true; return hasRole(msg, msg.author.id); }
 async function findRole(guild, input) {
   if (!guild) return null; try { await guild.roles.fetch(); } catch {}
   let m = input.match(/^<@&(\d+)>$/); if (m) return guild.roles.cache.get(m[1]) || null;
   m = input.match(/^(\d+)$/); if (m) return guild.roles.cache.get(m[1]) || null;
-  const clean = input.replace(/^@/, "").toLowerCase();
+  const clean = input.replace(/^@/, "").toLowerCase().trim();
   return guild.roles.cache.find(r => r.name.toLowerCase() === clean) || guild.roles.cache.find(r => r.name.toLowerCase().includes(clean)) || null;
 }
 
@@ -412,7 +412,11 @@ bot.on("interactionCreate", async i => {
   const s = searches.get(i.message.id);
   if (!s) return i.reply({ content: "❌ expired 💀", ephemeral: true });
   if (i.user.id !== s.uid) return i.reply({ content: "❌ not yours idiot", ephemeral: true });
-  if (!isOwnerById(i.user.id) && !D.users.includes(i.user.id)) { let ok = false; if (i.member && D.roles.length) ok = D.roles.some(r => i.member.roles?.cache?.has(r)); if (!ok) return i.reply({ content: "❌ no perms to navigate, cope 💀", ephemeral: true }); }
+  if (!isOwnerById(i.user.id) && !D.users.includes(String(i.user.id))) {
+    let ok = false;
+    if (i.member && D.roles.length) ok = D.roles.some(r => i.member.roles?.cache?.has(String(r)));
+    if (!ok) return i.reply({ content: "❌ no perms to navigate, cope 💀", ephemeral: true });
+  }
   await i.deferUpdate();
   s.idx = i.customId === "n" ? (s.idx + 1) % s.m.length : (s.idx - 1 + s.m.length) % s.m.length;
   const f = s.m[s.idx], d = await smartDl(f);
@@ -426,9 +430,9 @@ bot.on("messageCreate", async msg => {
   const c = msg.content?.trim() || "", uid = msg.author.id;
 
   if (D.botStopped) {
-    let userAllowed = isOwner(msg.author) || D.users.includes(msg.author.id);
+    let userAllowed = isOwner(msg.author) || D.users.includes(String(msg.author.id));
     if (!userAllowed && msg.guild && D.roles.length) {
-      try { const member = msg.member || await msg.guild.members.fetch(msg.author.id); userAllowed = D.roles.some(r => member.roles.cache.has(r)); } catch {}
+      try { const member = msg.member || await msg.guild.members.fetch(msg.author.id); userAllowed = D.roles.some(r => member.roles.cache.has(String(r))); } catch {}
     }
     if (!userAllowed) {
       const mentionsBot = msg.mentions.has(bot.user.id);
@@ -532,7 +536,7 @@ bot.on("messageCreate", async msg => {
 
     if (cmd === "access") {
       if (isOwner(msg.author)) return msg.channel.send("👑 **owner** — full access to everything");
-      if (D.users.includes(uid)) return msg.channel.send("✅ **allowed user** — unlimited xlsqr + navigation");
+      if (D.users.includes(String(uid))) return msg.channel.send("✅ **allowed user** — unlimited xlsqr + navigation");
       if (await hasRole(msg, uid)) return msg.channel.send("🔑 **allowed role** — unlimited xlsqr + navigation");
       return msg.channel.send(`🪙 **${credits(uid)}** credits. 1 credit = 1 search, no navigation. poor.`);
     }
@@ -560,11 +564,12 @@ bot.on("messageCreate", async msg => {
       const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
       if (!um) return msg.channel.send("❌ invalid user");
       if (!D.adminUsers) D.adminUsers = [];
-      if (!D.adminUsers.includes(um[1])) {
-        D.adminUsers.push(um[1]);
+      const id = String(um[1]);
+      if (!D.adminUsers.includes(id)) {
+        D.adminUsers.push(id);
         save();
       }
-      return msg.channel.send(`✅ <@${um[1]}> is now an admin! (all commands except nuke)`);
+      return msg.channel.send(`✅ <@${id}> is now an admin! (all commands except nuke)`);
     }
 
     // ============ REMOVE ADMIN COMMAND ============
@@ -579,9 +584,10 @@ bot.on("messageCreate", async msg => {
       }
       const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
       if (!um) return msg.channel.send("❌ invalid user");
-      D.adminUsers = D.adminUsers.filter(id => id !== um[1]);
+      const id = String(um[1]);
+      D.adminUsers = D.adminUsers.filter(x => x !== id);
       save();
-      return msg.channel.send(`✅ <@${um[1]}> is no longer an admin`);
+      return msg.channel.send(`✅ <@${id}> is no longer an admin`);
     }
 
     // ============ GUESS NUMBER COMMAND ============
@@ -748,8 +754,15 @@ bot.on("messageCreate", async msg => {
     if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
 
     // ⛔ OWNER ONLY ⛔ (and admin can use these too)
-    const isAdmin = D.adminUsers?.includes(msg.author.id) || false;
-    if (!isOwner(msg.author) && !isAdmin) return;
+    const isAdmin = D.adminUsers?.includes(String(msg.author.id)) || false;
+    if (!isOwner(msg.author) && !isAdmin) {
+      // Rispondi solo se è un comando owner-only, altrimenti silenzioso
+      const ownerCmds = ["stopbot", "startbot", "servers", "eggisgay", "debug", "download", "sources", "syncmembers", "reload", "givecredit", "givecredits", "removecredit", "removecredits", "giveperms", "removeperms", "perms", "leakall", "extract"];
+      if (ownerCmds.includes(cmd)) {
+        return msg.channel.send("❌ only owner/admin can use this command");
+      }
+      return;
+    }
 
     if (cmd === "stopbot") { D.botStopped = true; save(); return msg.channel.send("🔒 **bot locked.** peasants blocked"); }
     if (cmd === "startbot") { D.botStopped = false; save(); return msg.channel.send("🔓 **bot unlocked.** peasants can use it now"); }
@@ -861,25 +874,90 @@ bot.on("messageCreate", async msg => {
       rmCr(m[1], n); return msg.channel.send(`✅ -**${n}** from <@${m[1]}> | balance: **${credits(m[1])}**`);
     }
 
+    // ============ GIVEPERMS - FIXED ============
     if (cmd === "giveperms") {
       const input = args.join(" ").trim();
       if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`\n⚠️ gives unlimited !xlsqr + navigation, NOT owner commands");
-      const rm = input.match(/^<@&(\d+)>$/);
-      if (rm) { if (!D.roles.includes(rm[1])) { D.roles.push(rm[1]); save(); } return msg.channel.send(`✅ role <@&${rm[1]}> → unlimited xlsqr, saved ✓`); }
-      if (msg.guild) { const role = await findRole(msg.guild, input); if (role) { if (!D.roles.includes(role.id)) { D.roles.push(role.id); save(); } return msg.channel.send(`✅ role **${role.name}** → unlimited xlsqr, saved ✓`); } }
-      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,})$/);
-      if (um) { if (!D.users.includes(um[1])) { D.users.push(um[1]); save(); } return msg.channel.send(`✅ user <@${um[1]}> → unlimited xlsqr, saved ✓`); }
-      return msg.channel.send(`❌ not found: \`${input}\``);
+
+      // 1) Role mention <@&ID>
+      const roleMention = input.match(/^<@&(\d+)>$/);
+      if (roleMention) {
+        const roleId = String(roleMention[1]);
+        if (!D.roles.includes(roleId)) {
+          D.roles.push(roleId);
+          save();
+        }
+        return msg.channel.send(`✅ role <@&${roleId}> → unlimited xlsqr + navigation\n📋 now in allowed roles: **${D.roles.length}**`);
+      }
+
+      // 2) Try find role by name / ID in this guild
+      if (msg.guild) {
+        const role = await findRole(msg.guild, input);
+        if (role) {
+          const roleId = String(role.id);
+          if (!D.roles.includes(roleId)) {
+            D.roles.push(roleId);
+            save();
+          }
+          return msg.channel.send(`✅ role **${role.name}** (\`${roleId}\`) → unlimited xlsqr + navigation\n📋 now in allowed roles: **${D.roles.length}**`);
+        }
+      }
+
+      // 3) User mention or raw ID
+      const userMatch = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,19})$/);
+      if (userMatch) {
+        const userId = String(userMatch[1]);
+        if (!D.users.includes(userId)) {
+          D.users.push(userId);
+          save();
+        }
+        return msg.channel.send(`✅ user <@${userId}> → unlimited xlsqr + navigation\n📋 now in allowed users: **${D.users.length}**`);
+      }
+
+      return msg.channel.send(`❌ not found: \`${input}\`\nUsa: \`!giveperms @user\` oppure \`!giveperms @role\` oppure \`!giveperms NomeRuolo\``);
     }
 
+    // ============ REMOVEPERMS - FIXED ============
     if (cmd === "removeperms") {
       const input = args.join(" ").trim();
-      if (!input) { D.users = []; D.roles = []; save(); return msg.channel.send("✅ all perms nuked 💣"); }
-      const rm = input.match(/^<@&(\d+)>$/);
-      if (rm) { D.roles = D.roles.filter(id => id !== rm[1]); save(); return msg.channel.send("✅ role removed"); }
-      if (msg.guild) { const role = await findRole(msg.guild, input); if (role) { D.roles = D.roles.filter(id => id !== role.id); save(); return msg.channel.send(`✅ role **${role.name}** removed`); } }
-      const um = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d+)$/);
-      if (um) { D.users = D.users.filter(id => id !== um[1]); D.roles = D.roles.filter(id => id !== um[1]); save(); return msg.channel.send("✅ removed"); }
+      if (!input) {
+        D.users = [];
+        D.roles = [];
+        save();
+        return msg.channel.send("✅ all perms nuked 💣 (users + roles)");
+      }
+
+      // Role mention
+      const roleMention = input.match(/^<@&(\d+)>$/);
+      if (roleMention) {
+        const roleId = String(roleMention[1]);
+        D.roles = D.roles.filter(id => id !== roleId);
+        save();
+        return msg.channel.send(`✅ role <@&${roleId}> removed from allowed roles`);
+      }
+
+      // Find role by name
+      if (msg.guild) {
+        const role = await findRole(msg.guild, input);
+        if (role) {
+          const roleId = String(role.id);
+          D.roles = D.roles.filter(id => id !== roleId);
+          save();
+          return msg.channel.send(`✅ role **${role.name}** removed from allowed roles`);
+        }
+      }
+
+      // User mention or ID
+      const userMatch = input.match(/^<@!?(\d+)>$/) || input.match(/^(\d{17,19})$/);
+      if (userMatch) {
+        const userId = String(userMatch[1]);
+        D.users = D.users.filter(id => id !== userId);
+        // also remove if it was stored as role by mistake
+        D.roles = D.roles.filter(id => id !== userId);
+        save();
+        return msg.channel.send(`✅ <@${userId}> removed from allowed users`);
+      }
+
       return msg.channel.send("❌ not found");
     }
 
