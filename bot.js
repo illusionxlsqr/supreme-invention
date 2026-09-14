@@ -446,19 +446,25 @@ bot.on("messageCreate", async msg => {
   let repliesToBot = false;
   if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
 
+  // Se è una menzione/risposta al bot MA il testo (senza menzione) inizia con "!" → tratta come comando normale, non AI
   if (mentionsBot || repliesToBot) {
     let q = c.replace(/<@!?\d+>/g, "").trim();
-    if (!q) {
-      if (isVip(msg.author) || isOwner(msg.author)) return msg.reply("hey boss, what can I do for you? 🔥");
-      return msg.reply("tf you want? say something 😒");
+    // Se dopo aver tolto la menzione rimane un comando (!...), non mandare all'AI e usa la versione pulita
+    if (q.startsWith("!")) {
+      c = q; // sovrascrive il contenuto del messaggio con la versione senza menzione
+    } else {
+      if (!q) {
+        if (isVip(msg.author) || isOwner(msg.author)) return msg.reply("hey boss, what can I do for you? 🔥");
+        return msg.reply("tf you want? say something 😒");
+      }
+      msg.channel.sendTyping().catch(() => {});
+      const res = await askAI(uid, q, await getRelevantFilesContent(q, 2));
+      if (res.length <= 2000) return msg.reply(res);
+      const chunks = res.match(/[\s\S]{1,1990}/g) || [res];
+      await msg.reply(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) { await msg.channel.send(chunks[i]); await sleep(500); }
+      return;
     }
-    msg.channel.sendTyping().catch(() => {});
-    const res = await askAI(uid, q, await getRelevantFilesContent(q, 2));
-    if (res.length <= 2000) return msg.reply(res);
-    const chunks = res.match(/[\s\S]{1,1990}/g) || [res];
-    await msg.reply(chunks[0]);
-    for (let i = 1; i < chunks.length; i++) { await msg.channel.send(chunks[i]); await sleep(500); }
-    return;
   }
 
   if (!c.startsWith("!")) {
@@ -542,10 +548,24 @@ bot.on("messageCreate", async msg => {
     }
 
     if (cmd === "xlsqr") {
-      const q = args.join(" ").trim().toLowerCase(); if (!q) return msg.channel.send("❌ `!xlsqr <query>` seriously?");
+      // Pulisce query: toglie virgolette e spazi extra
+      let q = args.join(" ").trim().toLowerCase().replace(/^["'`]+|["'`]+$/g, "").trim();
+      if (!q) return msg.channel.send("❌ `!xlsqr <query>` seriously?");
       if (!fileCache.length) return msg.channel.send("❌ cache empty, owner needs to `!download` first");
       if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ no credits broke ass. `!claimdaily`");
-      const qw = q.split(/\s+/), matches = fileCache.filter(f => qw.every(w => f.name.toLowerCase().includes(w)));
+
+      const qw = q.split(/\s+/).filter(Boolean);
+      // Filtra + deduplica per nome file (case-insensitive) → niente file uguali
+      const seenNames = new Set();
+      const matches = [];
+      for (const f of fileCache) {
+        const nameLower = f.name.toLowerCase();
+        if (!qw.every(w => nameLower.includes(w))) continue;
+        if (seenNames.has(nameLower)) continue; // già presente, salta
+        seenNames.add(nameLower);
+        matches.push(f);
+      }
+
       if (!matches.length) return msg.channel.send(`❌ nothing for "${q}" L`);
       if (!hasUnlimited) rmCr(uid, 1);
       const f = matches[0], d = await smartDl(f);
