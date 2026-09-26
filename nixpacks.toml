@@ -1,12 +1,13 @@
 # Nixpacks fallback configuration for Railway
 [phases.setup]
-nixPkgs = ["nodejs_20", "python310", "git"]
+nixPkgs = ["nodejs_20", "python310", "git", "unzip", "curl"]
 
 [phases.install]
 cmds = [
   "npm install --production",
   "if [ ! -d Deobfuscator-Luraph-V15 ]; then git clone https://github.com/caomod2077/Deobfuscator-Luraph-V15.git Deobfuscator-Luraph-V15; fi",
-  "cd Deobfuscator-Luraph-V15 && npm install --production"
+  "cd Deobfuscator-Luraph-V15 && npm install --production",
+  "curl -sL https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip -o /tmp/luau.zip && unzip -o /tmp/luau.zip luau luau-ast -d Deobfuscator-Luraph-V15/bin/ && chmod +x Deobfuscator-Luraph-V15/bin/luau* && rm -f /tmp/luau.zip"
 ]
 
 [start]
