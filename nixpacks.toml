@@ -1,0 +1,13 @@
+# Nixpacks fallback configuration for Railway
+[phases.setup]
+nixPkgs = ["nodejs_20", "python310", "git"]
+
+[phases.install]
+cmds = [
+  "npm install --production",
+  "if [ ! -d Deobfuscator-Luraph-V15 ]; then git clone https://github.com/caomod2077/Deobfuscator-Luraph-V15.git Deobfuscator-Luraph-V15; fi",
+  "cd Deobfuscator-Luraph-V15 && npm install --production"
+]
+
+[start]
+cmd = "node bot.js"
