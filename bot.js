@@ -17,6 +17,7 @@ const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
