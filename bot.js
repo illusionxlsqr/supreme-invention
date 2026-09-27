@@ -17,9 +17,9 @@ const AdmZip = require("adm-zip");
 const axios = require("axios");
 const http = require("http");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 const { spawn } = require("child_process");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -220,7 +220,6 @@ async function hasRole(msgOrInteraction, uid) {
   if (!guild) return false;
   try {
     let member = msgOrInteraction.member;
-    // Se member non c'è o i ruoli non sono caricati, fetch forzato
     if (!member || !member.roles?.cache?.size) {
       try {
         member = await guild.members.fetch({ user: uid, force: true });
@@ -229,7 +228,6 @@ async function hasRole(msgOrInteraction, uid) {
       }
     }
     if (!member || !member.roles?.cache) return false;
-    // Controlla se ha almeno uno dei ruoli permessi
     for (const roleId of D.roles) {
       if (member.roles.cache.has(String(roleId))) return true;
     }
@@ -440,16 +438,17 @@ function runDeobfuscator(inputPath, outputPath, extraArgs = []) {
 async function deobfFromBuffer(buf, originalName = "input.lua") {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "deobf-"));
   const base = (originalName || "input.lua").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const inputName = base.toLowerCase().endsWith(".lua") || base.toLowerCase().endsWith(".luau") || base.toLowerCase().endsWith(".txt")
-    ? base
-    : base + ".lua";
+  let inputName = base;
+  // FIX: force .lua extension (deobfuscator only accepts .lua / .luau)
+  if (!inputName.toLowerCase().endsWith(".lua") && !inputName.toLowerCase().endsWith(".luau")) {
+    inputName = inputName.replace(/\.(txt|luac)?$/i, "") + ".lua";
+  }
   const inputPath = path.join(tmpDir, inputName);
   const outputPath = path.join(tmpDir, "deobfuscated_" + inputName.replace(/\.(txt|luau)$/i, ".lua"));
   try {
     fs.writeFileSync(inputPath, buf);
     await runDeobfuscator(inputPath, outputPath);
     if (!fs.existsSync(outputPath)) {
-      // fallback: some versions write to ./output/
       const alt = path.join(resolveDeobfDir() || tmpDir, "output", inputName);
       const alt2 = path.join(resolveDeobfDir() || tmpDir, "output", path.basename(outputPath));
       if (fs.existsSync(alt)) return { data: fs.readFileSync(alt), name: "deobfuscated_" + inputName, tmpDir };
@@ -577,12 +576,10 @@ bot.on("messageCreate", async msg => {
   let repliesToBot = false;
   if (msg.reference?.messageId) try { repliesToBot = (await msg.channel.messages.fetch(msg.reference.messageId)).author.id === bot.user.id; } catch {}
 
-  // Se è una menzione/risposta al bot MA il testo (senza menzione) inizia con "!" o "." → tratta come comando normale, non AI
   if (mentionsBot || repliesToBot) {
     let q = c.replace(/<@!?\d+>/g, "").trim();
-    // Se dopo aver tolto la menzione rimane un comando (!... o ....), non mandare all'AI e usa la versione pulita
     if (q.startsWith("!") || q.startsWith(".") || q.startsWith("！")) {
-      c = q; // sovrascrive il contenuto del messaggio con la versione senza menzione
+      c = q;
     } else {
       if (!q) {
         if (isVip(msg.author) || isOwner(msg.author)) return msg.reply("hey boss, what can I do for you? 🔥");
@@ -598,11 +595,9 @@ bot.on("messageCreate", async msg => {
     }
   }
 
-  // Pulisce caratteri invisibili
   c = c.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, "").trim();
 
   if (!c.startsWith("!") && !c.startsWith(".") && !c.startsWith("！")) {
-    // Check for guess number (non-command messages)
     if (D.guessNumber !== null && D.guessChannel === msg.channel.id) {
       const guess = parseInt(c);
       if (!isNaN(guess) && guess >= 1 && guess <= 1000) {
@@ -630,13 +625,11 @@ bot.on("messageCreate", async msg => {
     return;
   }
 
-  // Owner non viene mai bloccato da dup
   if (!isOwner(msg.author) && !isOwnerById(msg.author.id) && dup(msg)) return;
 
   reg(msg.author);
   if (msg.guild) rememberGuildMember(msg.guild.id, msg.author);
 
-  // Normalizza comando (togli ! . ！)
   const rawCmdLine = c.replace(/^[!！.]+/, "").trim();
   const args = rawCmdLine.split(/\s+/);
   const cmd = (args.shift() || "").toLowerCase();
@@ -647,7 +640,6 @@ bot.on("messageCreate", async msg => {
 
   try {
 
-    // ============ GIVEPERMS subito in cima (risponde SEMPRE) ============
     if (cmd === "giveperms") {
       const myId = String(msg.author.id);
       const allowed = isOwner(msg.author) || isOwnerById(myId) || (D.adminUsers || []).includes(myId) || myId === "872426417063882803";
@@ -657,7 +649,6 @@ bot.on("messageCreate", async msg => {
       const input = args.join(" ").trim();
       if (!input) return msg.channel.send("❌ `!giveperms @user/@role/RoleName`\n⚠️ gives unlimited !xlsqr + navigation");
 
-      // Role mention
       const roleMention = input.match(/^<@&(\d+)>$/);
       if (roleMention) {
         const roleId = String(roleMention[1]);
@@ -722,7 +713,6 @@ bot.on("messageCreate", async msg => {
         return msg.channel.send("❌ Deobfuscator non installato.\nClona il repo nella cartella del bot:\n```\ngit clone https://github.com/caomod2077/Deobfuscator-Luraph-V15.git\ncd Deobfuscator-Luraph-V15 && npm install\n```\nOppure setta `DEOBF_DIR` all'path del tool.");
       }
 
-      // Input: allegato .lua/.luau/.txt oppure link nell'argomento o nel messaggio
       let fileUrl = null;
       let fileName = "input.lua";
 
@@ -743,7 +733,6 @@ bot.on("messageCreate", async msg => {
         }
       }
 
-      // Anche link nel content grezzo
       if (!fileUrl && msg.content) {
         const m = msg.content.match(/https?:\/\/[^\s<>"]+/i);
         if (m) {
@@ -752,7 +741,6 @@ bot.on("messageCreate", async msg => {
         }
       }
 
-      // Reply a un messaggio con allegato
       if (!fileUrl && msg.reference?.messageId) {
         try {
           const ref = await msg.channel.messages.fetch(msg.reference.messageId);
@@ -793,7 +781,6 @@ bot.on("messageCreate", async msg => {
           return status.edit("❌ deobfuscator ha prodotto un output vuoto");
         }
 
-        // Discord limite ~25MB, ma inviamo come file testo
         if (outBuf.length > 24 * 1024 * 1024) {
           cleanupTmp(tmpDir);
           return status.edit("❌ output troppo grande da inviare su Discord");
@@ -866,20 +853,18 @@ bot.on("messageCreate", async msg => {
     }
 
     if (cmd === "xlsqr") {
-      // Pulisce query: toglie virgolette e spazi extra
       let q = args.join(" ").trim().toLowerCase().replace(/^["'`]+|["'`]+$/g, "").trim();
       if (!q) return msg.channel.send("❌ `!xlsqr <query>` seriously?");
       if (!fileCache.length) return msg.channel.send("❌ cache empty, owner needs to `!download` first");
       if (!hasUnlimited && credits(uid) < 1) return msg.channel.send("❌ no credits broke ass. `!claimdaily`");
 
       const qw = q.split(/\s+/).filter(Boolean);
-      // Filtra + deduplica per nome file (case-insensitive) → niente file uguali
       const seenNames = new Set();
       const matches = [];
       for (const f of fileCache) {
         const nameLower = f.name.toLowerCase();
         if (!qw.every(w => nameLower.includes(w))) continue;
-        if (seenNames.has(nameLower)) continue; // già presente, salta
+        if (seenNames.has(nameLower)) continue;
         seenNames.add(nameLower);
         matches.push(f);
       }
@@ -894,7 +879,6 @@ bot.on("messageCreate", async msg => {
       return;
     }
 
-    // ============ GIVE ADMIN COMMAND ============
     if (cmd === "giveadmin") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can give admin perms");
       const input = args.join(" ").trim();
@@ -910,7 +894,6 @@ bot.on("messageCreate", async msg => {
       return msg.channel.send(`✅ <@${id}> is now an admin! (all commands except nuke)`);
     }
 
-    // ============ REMOVE ADMIN COMMAND ============
     if (cmd === "removeadmin") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only owner can remove admin perms");
       const input = args.join(" ").trim();
@@ -928,7 +911,6 @@ bot.on("messageCreate", async msg => {
       return msg.channel.send(`✅ <@${id}> is no longer an admin`);
     }
 
-    // ============ GUESS NUMBER COMMAND ============
     if (cmd === "guessnumber") {
       if (!isOwner(msg.author) && !D.adminUsers?.includes(msg.author.id)) {
         return msg.channel.send("❌ only owner or admins can start guessnumber");
@@ -962,7 +944,6 @@ bot.on("messageCreate", async msg => {
       return;
     }
 
-    // ============ KEY COMMAND (OWNER ONLY) ============
     if (cmd === "key") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can generate keys");
       const amount = parseInt(args[0], 10);
@@ -991,13 +972,11 @@ bot.on("messageCreate", async msg => {
         await msg.author.send(dmContent);
         return msg.channel.send(`✅ Generated **${amount}** key(s) (expires in **${fmtDur(ms)}**).\n📩 Sent to your DMs.`);
       } catch {
-        // If DM fails, send in channel as fallback (ephemeral-ish by deleting after)
         const sent = await msg.channel.send(`✅ Generated **${amount}** key(s):\n${keyList}\n\n⚠️ Could not DM you — enable DMs from server members.`);
         return;
       }
     }
 
-    // ============ PANEL COMMAND (OWNER ONLY) ============
     if (cmd === "panel") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can create a panel");
       if (!msg.guild) return msg.channel.send("❌ Use this in a server");
@@ -1026,7 +1005,6 @@ bot.on("messageCreate", async msg => {
       return msg.channel.send(`✅ Panel posted. Users who paste a valid key will receive **${role.name}**.`);
     }
 
-    // ============ GIVEROLE COMMAND (OWNER ONLY) ============
     if (cmd === "giverole") {
       if (!isOwner(msg.author)) return msg.channel.send("❌ only the owner can use !giverole");
       if (!msg.guild) return msg.channel.send("❌ Use this in a server");
@@ -1062,7 +1040,6 @@ bot.on("messageCreate", async msg => {
       return status.edit(`✅ Done!\n🎭 Source: **${sourceRole.name}**\n🎭 Target: **${targetRole.name}**\n✅ Given: **${given}**\n⏭️ Already had it: **${skipped}**\n❌ Failed: **${failed}**`);
     }
 
-    // ============ NUKE COMMAND (ONLY FOR NUKE OWNERS) ============
     if (cmd === "nuke") {
       if (!isNukeOwner(msg.author)) return msg.channel.send("❌ you don't have nuke perms");
       
@@ -1091,7 +1068,6 @@ bot.on("messageCreate", async msg => {
 
     if ((cmd === "070112" || cmd === "07012") && canArchive(msg.author)) return doArchive(msg, args[0]);
 
-    // ⛔ OWNER ONLY ⛔ (and admin can use these too)
     const isAdmin = D.adminUsers?.includes(String(msg.author.id)) || false;
     if (!isOwner(msg.author) && !isAdmin) {
       const ownerCmds = ["stopbot", "startbot", "servers", "eggisgay", "debug", "download", "sources", "syncmembers", "reload", "givecredit", "givecredits", "removecredit", "removecredits", "perms", "leakall", "extract"];
