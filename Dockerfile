@@ -1,12 +1,12 @@
 ﻿FROM node:20-alpine
 
-# Install Lua (Alpine package name)
+# Install Lua (Alpine package)
 RUN apk add --no-cache lua5.3
 
 WORKDIR /app
 COPY . .
 
-# Install only production dependencies (uses package‑lock)
+# Install production deps (uses package-lock.json)
 RUN npm ci --only=production
 
 ENV PORT=3000
